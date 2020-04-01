@@ -5,6 +5,16 @@
 
 namespace vk
 {
+	struct active_renderpass_info_t
+	{
+		VkRenderPass pass = VK_NULL_HANDLE;
+		VkFramebuffer fbo = VK_NULL_HANDLE;
+	};
+
+	atomic_t<u64> g_cached_renderpass_key = 0;
+	VkRenderPass  g_cached_renderpass = VK_NULL_HANDLE;
+	std::unordered_map<VkCommandBuffer, active_renderpass_info_t>  g_current_renderpass;
+
 	shared_mutex g_renderpass_cache_mutex;
 	std::unordered_map<u64, VkRenderPass> g_renderpass_cache;
 
@@ -184,6 +194,28 @@ namespace vk
 			attachment_references.push_back({ attachment_count, dsv_layout });
 		}
 
+		VkSubpassDependency null_subpass_dependencies[2] =
+		{
+			{
+				.srcSubpass = VK_SUBPASS_EXTERNAL,
+				.dstSubpass = 0,
+				.srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+				.dstStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+				.srcAccessMask = 0,
+				.dstAccessMask = 0,
+				.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT
+			},
+			{
+				.srcSubpass = 0,
+				.dstSubpass = VK_SUBPASS_EXTERNAL,
+				.srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+				.dstStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+				.srcAccessMask = 0,
+				.dstAccessMask = 0,
+				.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT
+			}
+		};
+
 		VkSubpassDescription subpass = {};
 		subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 		subpass.colorAttachmentCount = attachment_count;
@@ -196,8 +228,19 @@ namespace vk
 		rp_info.pAttachments = attachments.data();
 		rp_info.subpassCount = 1;
 		rp_info.pSubpasses = &subpass;
-		rp_info.pDependencies = nullptr;
-		rp_info.dependencyCount = 0;
+
+		if (vk::get_driver_vendor() == vk::driver_vendor::RADV)
+		{
+			// So, according to spec, if you do not explicitly define the relationship between a subpass and its neighbours,
+			// a full pipeline barrier will be inserted for you, which is awful for performance.
+			// However, only RADV seems to do this and it does not work for other vendors.
+			// NVIDIA specifically slows to a crawl even with a TOP_OF_PIPE->TOP_OF_PIPE dependency with no dependent access.
+			// RPCS3 does not actually want to declare any dependency here, we have explicit pipeline barriers for our tasks.
+			// Workaround: Only provide this null dep chain for RADV
+
+			rp_info.dependencyCount = 2;
+			rp_info.pDependencies = null_subpass_dependencies;
+		}
 
 		VkRenderPass result;
 		CHECK_RESULT(vkCreateRenderPass(dev, &rp_info, NULL, &result));
@@ -214,5 +257,52 @@ namespace vk
 		}
 
 		g_renderpass_cache.clear();
+	}
+
+	void begin_renderpass(VkCommandBuffer cmd, VkRenderPass pass, VkFramebuffer target, const coordu& framebuffer_region)
+	{
+		auto& renderpass_info = g_current_renderpass[cmd];
+		if (renderpass_info.pass == pass && renderpass_info.fbo == target)
+		{
+			return;
+		}
+		else if (renderpass_info.pass != VK_NULL_HANDLE)
+		{
+			end_renderpass(cmd);
+		}
+
+		VkRenderPassBeginInfo rp_begin = {};
+		rp_begin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+		rp_begin.renderPass = pass;
+		rp_begin.framebuffer = target;
+		rp_begin.renderArea.offset.x = static_cast<int32_t>(framebuffer_region.x);
+		rp_begin.renderArea.offset.y = static_cast<int32_t>(framebuffer_region.y);
+		rp_begin.renderArea.extent.width = framebuffer_region.width;
+		rp_begin.renderArea.extent.height = framebuffer_region.height;
+
+		vkCmdBeginRenderPass(cmd, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
+		renderpass_info = { pass, target };
+	}
+
+	void begin_renderpass(VkDevice dev, VkCommandBuffer cmd, u64 renderpass_key, VkFramebuffer target, const coordu& framebuffer_region)
+	{
+		if (renderpass_key != g_cached_renderpass_key)
+		{
+			g_cached_renderpass = get_renderpass(dev, renderpass_key);
+			g_cached_renderpass_key = renderpass_key;
+		}
+
+		begin_renderpass(cmd, g_cached_renderpass, target, framebuffer_region);
+	}
+
+	void end_renderpass(VkCommandBuffer cmd)
+	{
+		vkCmdEndRenderPass(cmd);
+		g_current_renderpass[cmd] = {};
+	}
+
+	bool is_renderpass_open(VkCommandBuffer cmd)
+	{
+		return g_current_renderpass[cmd].pass != VK_NULL_HANDLE;
 	}
 }

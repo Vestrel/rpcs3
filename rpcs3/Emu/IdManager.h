@@ -33,7 +33,7 @@ namespace id_manager
 		static const u32 invalid = -+!base;
 
 		// Note: full 32 bits range cannot be used at current implementation
-		static_assert(count > 0 && step > 0 && u64{step} * count + base < u64{UINT32_MAX} + (base != 0 ? 1 : 0), "ID traits: invalid object range");
+		static_assert(count && step && u64{step} * (count - 1) + base < u64{UINT32_MAX} + (base != 0 ? 1 : 0), "ID traits: invalid object range");
 	};
 
 	// Correct usage testing
@@ -195,6 +195,11 @@ class idm
 			return ptr.operator bool();
 		}
 
+		T& operator*() const
+		{
+			return *ptr;
+		}
+
 		T* operator->() const
 		{
 			return ptr.get();
@@ -211,6 +216,11 @@ class idm
 		explicit operator bool() const
 		{
 			return ptr != nullptr;
+		}
+
+		T& operator*() const
+		{
+			return *ptr;
 		}
 
 		T* operator->() const
@@ -408,7 +418,7 @@ public:
 	{
 		const auto found = find_id<T, Get>(id);
 
-		if (UNLIKELY(found == nullptr))
+		if (found == nullptr) [[unlikely]]
 		{
 			return nullptr;
 		}
@@ -424,7 +434,7 @@ public:
 
 		const auto found = find_id<T, Get>(id);
 
-		if (UNLIKELY(found == nullptr))
+		if (found == nullptr) [[unlikely]]
 		{
 			return nullptr;
 		}
@@ -440,7 +450,7 @@ public:
 
 		const auto found = find_id<T, Get>(id);
 
-		if (UNLIKELY(found == nullptr))
+		if (found == nullptr) [[unlikely]]
 		{
 			return {nullptr};
 		}
@@ -520,6 +530,28 @@ public:
 			std::lock_guard lock(id_manager::g_mutex);
 
 			if (const auto found = find_id<T, Get>(id))
+			{
+				ptr = std::move(found->second);
+			}
+			else
+			{
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	// Remove the ID if matches the weak/shared ptr
+	template <typename T, typename Get = T, typename Ptr>
+	static inline bool remove_verify(u32 id, Ptr sptr)
+	{
+		std::shared_ptr<void> ptr;
+		{
+			std::lock_guard lock(id_manager::g_mutex);
+
+			if (const auto found = find_id<T, Get>(id); found && 
+				(!found->second.owner_before(sptr) && !sptr.owner_before(found->second)))
 			{
 				ptr = std::move(found->second);
 			}

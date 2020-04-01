@@ -1,7 +1,6 @@
 ﻿#include "stdafx.h"
 #include "sys_semaphore.h"
 
-#include "Emu/System.h"
 #include "Emu/IdManager.h"
 #include "Emu/IPC.h"
 
@@ -131,12 +130,17 @@ error_code sys_semaphore_wait(ppu_thread& ppu, u32 sem_id, u64 timeout)
 		{
 			if (lv2_obj::wait_timeout(timeout, &ppu))
 			{
+				// Wait for rescheduling
+				if (ppu.check_state())
+				{
+					return 0;
+				}
+
 				std::lock_guard lock(sem->mutex);
 
 				if (!sem->unqueue(sem->sq, &ppu))
 				{
-					timeout = 0;
-					continue;
+					break;
 				}
 
 				verify(HERE), 0 > sem->val.fetch_op([](s32& val)

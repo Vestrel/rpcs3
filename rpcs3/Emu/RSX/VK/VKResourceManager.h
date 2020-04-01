@@ -12,7 +12,9 @@ namespace vk
 		u64 eid;
 		const vk::render_device* m_device;
 		std::vector<std::unique_ptr<vk::buffer>> m_disposed_buffers;
-		rsx::simple_array<VkEvent> m_disposed_events;
+		std::vector<std::unique_ptr<vk::image_view>> m_disposed_image_views;
+		std::vector<std::unique_ptr<vk::image>> m_disposed_images;
+		std::vector<std::unique_ptr<vk::event>> m_disposed_events;
 
 		eid_scope_t(u64 _eid):
 			eid(_eid), m_device(vk::get_current_renderer())
@@ -25,17 +27,10 @@ namespace vk
 
 		void discard()
 		{
-			if (!m_disposed_events.empty())
-			{
-				for (auto &ev : m_disposed_events)
-				{
-					vkDestroyEvent(*m_device, ev, nullptr);
-				}
-
-				m_disposed_events.clear();
-			}
-
 			m_disposed_buffers.clear();
+			m_disposed_events.clear();
+			m_disposed_image_views.clear();
+			m_disposed_images.clear();
 		}
 	};
 
@@ -72,7 +67,7 @@ namespace vk
 			}
 			else
 			{
-				if (LIKELY(value >= 0.f))
+				if (value >= 0.f) [[likely]]
 				{
 					return raw;
 				}
@@ -132,9 +127,24 @@ namespace vk
 			get_current_eid_scope().m_disposed_buffers.emplace_back(std::move(buf));
 		}
 
-		void dispose(VkEvent& event)
+		void dispose(std::unique_ptr<vk::image_view>& view)
 		{
-			get_current_eid_scope().m_disposed_events.push_back(event);
+			get_current_eid_scope().m_disposed_image_views.emplace_back(std::move(view));
+		}
+
+		void dispose(std::unique_ptr<vk::image>& img)
+		{
+			get_current_eid_scope().m_disposed_images.emplace_back(std::move(img));
+		}
+
+		void dispose(std::unique_ptr<vk::viewable_image>& img)
+		{
+			get_current_eid_scope().m_disposed_images.emplace_back(std::move(img));
+		}
+
+		void dispose(std::unique_ptr<vk::event>& event)
+		{
+			get_current_eid_scope().m_disposed_events.emplace_back(std::move(event));
 			event = VK_NULL_HANDLE;
 		}
 

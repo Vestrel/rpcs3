@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include "stdafx.h"
 #include "Emu/Memory/vm_ptr.h"
 #include <atomic>
 
@@ -64,7 +65,11 @@ enum
 
 	SCE_NP_TROPHY_INVALID_CONTEXT      = 0,
 	SCE_NP_TROPHY_INVALID_HANDLE       = 0,
-	SCE_NP_TROPHY_INVALID_TROPHY_ID    = -1,
+};
+
+enum : u32
+{
+	SCE_NP_TROPHY_INVALID_TROPHY_ID    = 0xffffffff,
 };
 
 enum SceNpTrophyGrade

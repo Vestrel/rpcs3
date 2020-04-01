@@ -1,18 +1,72 @@
 ﻿#include "game_compatibility.h"
+#include "gui_settings.h"
+#include "progress_dialog.h"
+#include "curl_handle.h"
 
-#include <QLabel>
+#include <QApplication>
 #include <QMessageBox>
+#include <QJsonDocument>
+#include <QThread>
+
+LOG_CHANNEL(compat_log, "Compat");
 
 constexpr auto qstr = QString::fromStdString;
 inline std::string sstr(const QString& _in) { return _in.toStdString(); }
+
+size_t curl_write_cb_compat(char* ptr, size_t /*size*/, size_t nmemb, void* userdata)
+{
+	game_compatibility* gm_cmp = reinterpret_cast<game_compatibility*>(userdata);
+	return gm_cmp->update_buffer(ptr, nmemb);
+}
 
 game_compatibility::game_compatibility(std::shared_ptr<gui_settings> settings) : m_xgui_settings(settings)
 {
 	m_filepath = m_xgui_settings->GetSettingsDir() + "/compat_database.dat";
 	m_url = "https://rpcs3.net/compatibility?api=v1&export";
-	m_network_request = QNetworkRequest(QUrl(m_url));
+
+	m_curl = new curl_handle(this);
 
 	RequestCompatibility();
+
+	// We need this signal in order to update the GUI from the main thread
+	connect(this, &game_compatibility::signal_buffer_update, this, &game_compatibility::handle_buffer_update);
+}
+
+void game_compatibility::handle_buffer_update(int size, int max)
+{
+	if (m_progress_dialog)
+	{
+		m_progress_dialog->setMaximum(max);
+		m_progress_dialog->setValue(size);
+		QApplication::processEvents();
+	}
+}
+
+size_t game_compatibility::update_buffer(char* data, size_t size)
+{
+	if (m_curl_abort)
+	{
+		return 0;
+	}
+
+	const auto old_size = m_curl_buf.size();
+	const auto new_size = old_size + size;
+	m_curl_buf.resize(static_cast<int>(new_size));
+	memcpy(m_curl_buf.data() + old_size, data, size);
+
+	int max = m_progress_dialog ? m_progress_dialog->maximum() : 0;
+
+	if (m_actual_dwnld_size < 0)
+	{
+		if (curl_easy_getinfo(m_curl->get_curl(), CURLINFO_CONTENT_LENGTH_DOWNLOAD, &m_actual_dwnld_size) == CURLE_OK && m_actual_dwnld_size > 0)
+		{
+			max = static_cast<int>(m_actual_dwnld_size);
+		}
+	}
+
+	Q_EMIT signal_buffer_update(static_cast<int>(new_size), max);
+
+	return size;
 }
 
 bool game_compatibility::ReadJSON(const QJsonObject& json_data, bool after_download)
@@ -36,19 +90,19 @@ bool game_compatibility::ReadJSON(const QJsonObject& json_data, bool after_downl
 				error_message = "Server Error - Unknown Error";
 				break;
 			}
-			LOG_ERROR(GENERAL, "Compatibility error: { %s: return code %d }", error_message, return_code);
+			compat_log.error("%s: return code %d", error_message, return_code);
 			Q_EMIT DownloadError(qstr(error_message) + " " + QString::number(return_code));
 		}
 		else
 		{
-			LOG_ERROR(GENERAL, "Compatibility error: { Database Error - Invalid: return code %d }", return_code);
+			compat_log.error("Database Error - Invalid: return code %d", return_code);
 		}
 		return false;
 	}
 
 	if (!json_data["results"].isObject())
 	{
-		LOG_ERROR(GENERAL, "Compatibility error: { Database Error - No Results found }");
+		compat_log.error("Database Error - No Results found");
 		return false;
 	}
 
@@ -61,7 +115,7 @@ bool game_compatibility::ReadJSON(const QJsonObject& json_data, bool after_downl
 	{
 		if (!json_results[key].isObject())
 		{
-			LOG_ERROR(GENERAL, "Compatibility error: { Database Error - Unusable object %s }", sstr(key));
+			compat_log.error("Database Error - Unusable object %s", sstr(key));
 			continue;
 		}
 
@@ -73,8 +127,8 @@ bool game_compatibility::ReadJSON(const QJsonObject& json_data, bool after_downl
 		// Add date if possible
 		status.date = json_result.value("date").toString();
 
-		// Add version if possible
-		status.version = json_result.value("update").toString();
+		// Add latest version if possible
+		status.latest_version = json_result.value("update").toString();
 
 		// Add status to map
 		m_compat_database.emplace(std::pair<std::string, compat_status>(sstr(key), status));
@@ -92,20 +146,20 @@ void game_compatibility::RequestCompatibility(bool online)
 
 		if (!file.exists())
 		{
-			LOG_NOTICE(GENERAL, "Compatibility notice: { Database file not found: %s }", sstr(m_filepath));
+			compat_log.notice("Database file not found: %s", sstr(m_filepath));
 			return;
 		}
 
 		if (!file.open(QIODevice::ReadOnly))
 		{
-			LOG_ERROR(GENERAL, "Compatibility error: { Database Error - Could not read database from file: %s }", sstr(m_filepath));
+			compat_log.error("Database Error - Could not read database from file: %s", sstr(m_filepath));
 			return;
 		}
 
 		QByteArray data = file.readAll();
 		file.close();
 
-		LOG_NOTICE(GENERAL, "Compatibility notice: { Finished reading database from file: %s }", sstr(m_filepath));
+		compat_log.notice("Finished reading database from file: %s", sstr(m_filepath));
 
 		// Create new map from database
 		ReadJSON(QJsonDocument::fromJson(data).object(), online);
@@ -113,112 +167,51 @@ void game_compatibility::RequestCompatibility(bool online)
 		return;
 	}
 
-	if (QSslSocket::supportsSsl() == false)
-	{
-		LOG_ERROR(GENERAL, "Can not retrieve the online database! Please make sure your system supports SSL. Visit our quickstart guide for more information: https://rpcs3.net/quickstart");
-		const QString message = tr("Can not retrieve the online database!<br>Please make sure your system supports SSL.<br>Visit our <a href='https://rpcs3.net/quickstart'>quickstart guide</a> for more information.");
-		QMessageBox box(QMessageBox::Icon::Warning, tr("Warning!"), message, QMessageBox::StandardButton::Ok, nullptr);
-		box.setTextFormat(Qt::RichText);
-		box.exec();
-		return;
-	}
-
-	LOG_NOTICE(GENERAL, "SSL supported! Beginning compatibility database download from: %s", sstr(m_url));
-
-	// Send request and wait for response
-	m_network_access_manager.reset(new QNetworkAccessManager());
-	QNetworkReply* network_reply = m_network_access_manager->get(m_network_request);
+	compat_log.notice("Beginning compatibility database download from: %s", m_url);
 
 	// Show Progress
-	m_progress_dialog = new progress_dialog(tr("Downloading Database"), tr(".Please wait."), tr("Abort"), 0, 100);
+	m_progress_dialog = new progress_dialog(tr("Downloading Database"), tr("Please wait ..."), tr("Abort"), 0, 100, true);
 	m_progress_dialog->show();
 
-	// Animate progress dialog a bit more
-	m_progress_timer.reset(new QTimer(this));
-	connect(m_progress_timer.get(), &QTimer::timeout, [&]()
-	{
-		switch (++m_timer_count % 3)
-		{
-		case 0:
-			m_timer_count = 0;
-			m_progress_dialog->setLabelText(tr(".Please wait."));
-			break;
-		case 1:
-			m_progress_dialog->setLabelText(tr("..Please wait.."));
-			break;
-		default:
-			m_progress_dialog->setLabelText(tr("...Please wait..."));
-			break;
-		}
-	});
-	m_progress_timer->start(500);
+	curl_easy_setopt(m_curl->get_curl(), CURLOPT_URL, m_url.c_str());
+	curl_easy_setopt(m_curl->get_curl(), CURLOPT_WRITEFUNCTION, curl_write_cb_compat);
+	curl_easy_setopt(m_curl->get_curl(), CURLOPT_WRITEDATA, this);
+	curl_easy_setopt(m_curl->get_curl(), CURLOPT_FOLLOWLOCATION, 1);
+
+	m_curl_buf.clear();
+	m_curl_abort = false;
 
 	// Handle abort
-	connect(m_progress_dialog, &QProgressDialog::canceled, network_reply, &QNetworkReply::abort);
+	connect(m_progress_dialog, &QProgressDialog::canceled, [this] { m_curl_abort = true; });
 	connect(m_progress_dialog, &QProgressDialog::finished, m_progress_dialog, &QProgressDialog::deleteLater);
 
-	// Handle progress
-	connect(network_reply, &QNetworkReply::downloadProgress, [&](qint64 bytesReceived, qint64 bytesTotal)
+	auto thread = QThread::create([&]
 	{
-		m_progress_dialog->setMaximum(bytesTotal);
-		m_progress_dialog->setValue(bytesReceived);
-	});
+		const auto result = curl_easy_perform(m_curl->get_curl());
+		m_curl_result = result == CURLE_OK;
 
-	// Handle network error
-	connect(network_reply, QOverload<QNetworkReply::NetworkError>::of(&QNetworkReply::error), [=](QNetworkReply::NetworkError error)
+		if (!m_curl_result)
+		{
+			Q_EMIT DownloadError(qstr("Curl error: ") + qstr(curl_easy_strerror(result)));
+		}
+	});
+	connect(thread, &QThread::finished, this, [this, online]()
 	{
-		if (error == QNetworkReply::NoError)
+		if (m_progress_dialog)
+		{
+			m_progress_dialog->close();
+			m_progress_dialog = nullptr;
+		}
+
+		if (!m_curl_result)
 		{
 			return;
 		}
 
-		if (error != QNetworkReply::OperationCanceledError)
-		{
-			// We failed to retrieve a new database, therefore refresh gamelist to old state
-			const QString error = network_reply->errorString();
-			Q_EMIT DownloadError(error);
-			LOG_ERROR(GENERAL, "Compatibility error: { Network Error - %s }", sstr(error));
-		}
-
-		// Clean up Progress Dialog
-		if (m_progress_dialog)
-		{
-			m_progress_dialog->close();
-		}
-		if (m_progress_timer)
-		{
-			m_progress_timer->stop();
-		}
-
-		network_reply->deleteLater();
-	});
-
-	// Handle response according to its contents
-	connect(network_reply, &QNetworkReply::finished, [=]()
-	{
-		if (network_reply->error() != QNetworkReply::NoError)
-		{
-			return;
-		}
-
-		// Clean up Progress Dialog
-		if (m_progress_dialog)
-		{
-			m_progress_dialog->close();
-		}
-		if (m_progress_timer)
-		{
-			m_progress_timer->stop();
-		}
-
-		LOG_NOTICE(GENERAL, "Compatibility notice: { Database download finished }");
-
-		// Read data from network reply
-		QByteArray data = network_reply->readAll();
-		network_reply->deleteLater();
+		compat_log.notice("Database download finished");
 
 		// Create new map from database and write database to file if database was valid
-		if (ReadJSON(QJsonDocument::fromJson(data).object(), online))
+		if (ReadJSON(QJsonDocument::fromJson(m_curl_buf).object(), online))
 		{
 			// We have a new database in map, therefore refresh gamelist to new state
 			Q_EMIT DownloadFinished();
@@ -228,21 +221,23 @@ void game_compatibility::RequestCompatibility(bool online)
 
 			if (file.exists())
 			{
-				LOG_NOTICE(GENERAL, "Compatibility notice: { Database file found: %s }", sstr(m_filepath));
+				compat_log.notice("Database file found: %s", sstr(m_filepath));
 			}
 
 			if (!file.open(QIODevice::WriteOnly))
 			{
-				LOG_ERROR(GENERAL, "Compatibility error: { Database Error - Could not write database to file: %s }", sstr(m_filepath));
+				compat_log.error("Database Error - Could not write database to file: %s", sstr(m_filepath));
 				return;
 			}
 
-			file.write(data);
+			file.write(m_curl_buf);
 			file.close();
 
-			LOG_SUCCESS(GENERAL, "Compatibility success: { Write database to file: %s }", sstr(m_filepath));
+			compat_log.success("Wrote database to file: %s", sstr(m_filepath));
 		}
 	});
+	thread->setObjectName("Compat Update");
+	thread->start();
 
 	// We want to retrieve a new database, therefore refresh gamelist and indicate that
 	Q_EMIT DownloadStarted();

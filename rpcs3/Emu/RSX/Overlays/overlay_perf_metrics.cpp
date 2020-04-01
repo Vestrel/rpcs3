@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <utility>
+#include <charconv>
 
 namespace rsx
 {
@@ -21,21 +22,64 @@ namespace rsx
 				hex_color.erase(0, 1);
 			}
 
-			unsigned long hexval;
-			const size_t len = hex_color.length();
+			unsigned hexval = 0;
+			const auto len = hex_color.length();
 
-			try
+			if (len != 6 && len != 8)
 			{
-				if (len != 6 && len != 8)
-				{
-					fmt::throw_exception("wrong length: %d", len);
-				}
-				hexval = std::stoul(hex_color, nullptr, 16);
-			}
-			catch (const std::exception& e)
-			{
-				LOG_ERROR(RSX, "Overlays: tried to convert incompatible color code: '%s' exception: '%s'", hex_color, e.what());
+				rsx_log.error("Incompatible color code: '%s' has wrong length: %d", hex_color, len);
 				return color4f(0.0f, 0.0f, 0.0f, 0.0f);
+			}
+			else
+			{
+				// auto&& [ptr, ec] = std::from_chars(hex_color.c_str(), hex_color.c_str() + len, &hexval, 16);
+
+				// if (ptr != hex_color.c_str() + len || ec)
+				// {
+				// 	rsx_log.error("Overlays: tried to convert incompatible color code: '%s'", hex_color);
+				// 	return color4f(0.0f, 0.0f, 0.0f, 0.0f);
+				// }
+				for (u32 i = 0; i < len; i++)
+				{
+					hexval <<= 4;
+
+					switch (char c = hex_color[i])
+					{
+					case '0':
+					case '1':
+					case '2':
+					case '3':
+					case '4':
+					case '5':
+					case '6':
+					case '7':
+					case '8':
+					case '9':
+						hexval |= (c - '0');
+						break;
+					case 'a':
+					case 'b':
+					case 'c':
+					case 'd':
+					case 'e':
+					case 'f':
+						hexval |= (c - 'a' + 10);
+						break;
+					case 'A':
+					case 'B':
+					case 'C':
+					case 'D':
+					case 'E':
+					case 'F':
+						hexval |= (c - 'A' + 10);
+						break;
+					default:
+					{
+						rsx_log.error("Overlays: invalid characters in color code: '%s'", hex_color);
+						return color4f(0.0f, 0.0f, 0.0f, 0.0f);
+					}
+					}
+				}
 			}
 
 			const int r = (len == 8 ? (hexval >> 24) : (hexval >> 16)) & 0xff;
@@ -146,20 +190,23 @@ namespace rsx
 
 				if (m_framerate_graph_enabled)
 				{
+					m_fps_graph.update();
 					m_fps_graph.set_pos(body_left, body_bottom);
 					m_fps_graph.set_size(graphs_width, fps_graph_h);
 				}
 
 				if (m_frametime_graph_enabled)
 				{
-					u16 padding = 0;
+					m_frametime_graph.update();
+
+					u16 y_offset{};
 
 					if (m_framerate_graph_enabled)
 					{
-						padding = m_fps_graph.h + graphs_padding;
+						y_offset = m_fps_graph.get_height();
 					}
 
-					m_frametime_graph.set_pos(body_left, body_bottom + padding);
+					m_frametime_graph.set_pos(body_left, body_bottom + y_offset);
 					m_frametime_graph.set_size(graphs_width, frametime_graph_h);
 				}
 			}
@@ -183,9 +230,9 @@ namespace rsx
 			switch (m_detail)
 			{
 			case detail_level::minimal:
-			case detail_level::low: m_titles.text = ""; break;
-			case detail_level::medium: m_titles.text = fmt::format("\n\n%s", title1_medium); break;
-			case detail_level::high: m_titles.text = fmt::format("\n\n%s\n\n\n\n\n\n%s", title1_high, title2); break;
+			case detail_level::low: m_titles.set_text(""); break;
+			case detail_level::medium: m_titles.set_text(fmt::format("\n\n%s", title1_medium)); break;
+			case detail_level::high: m_titles.set_text(fmt::format("\n\n%s\n\n\n\n\n\n%s", title1_high, title2)); break;
 			}
 			m_titles.auto_resize();
 			m_titles.refresh();
@@ -202,6 +249,7 @@ namespace rsx
 			update();
 
 			m_is_initialised = true;
+			visible = true;
 		}
 
 		void perf_metrics_overlay::set_framerate_graph_enabled(bool enabled)
@@ -213,8 +261,8 @@ namespace rsx
 
 			if (enabled)
 			{
-				m_fps_graph.set_title("Framerate");
-				m_fps_graph.set_font_size(m_font_size * 0.8);
+				m_fps_graph.set_title("   Framerate");
+				m_fps_graph.set_font_size(static_cast<u16>(m_font_size * 0.8));
 				m_fps_graph.set_count(50);
 				m_fps_graph.set_color(convert_color_code(m_color_body, m_opacity));
 				m_fps_graph.set_guide_interval(10);
@@ -232,8 +280,8 @@ namespace rsx
 
 			if (enabled)
 			{
-				m_frametime_graph.set_title("Frametime");
-				m_frametime_graph.set_font_size(m_font_size * 0.8);
+				m_frametime_graph.set_title("   Frametime");
+				m_frametime_graph.set_font_size(static_cast<u16>(m_font_size * 0.8));
 				m_frametime_graph.set_count(170);
 				m_frametime_graph.set_color(convert_color_code(m_color_body, m_opacity));
 				m_frametime_graph.set_guide_interval(8);
@@ -347,7 +395,7 @@ namespace rsx
 				if (m_frametime_graph_enabled)
 				{
 					const auto elapsed_frame = m_frametime_timer.GetElapsedTimeInMilliSec();
-					m_frametime_graph.record_datapoint(elapsed_frame);
+					m_frametime_graph.record_datapoint(static_cast<float>(elapsed_frame));
 				}
 
 				if (m_force_repaint)
@@ -396,7 +444,7 @@ namespace rsx
 				{
 				case detail_level::high:
 				{
-					frametime = m_force_update ? 0 : std::max(0.0, elapsed_update / m_frames);
+					frametime = m_force_update ? 0.f : std::max(0.f, static_cast<float>(elapsed_update / m_frames));
 
 					rsx_load = rsx_thread->get_load();
 
@@ -419,7 +467,7 @@ namespace rsx
 					rsx_cycles += rsx_thread->get_cycles();
 
 					total_cycles = std::max<u64>(1, ppu_cycles + spu_cycles + rsx_cycles);
-					cpu_usage = m_cpu_stats.get_usage();
+					cpu_usage = static_cast<f32>(m_cpu_stats.get_usage());
 
 					ppu_usage = std::clamp(cpu_usage * ppu_cycles / total_cycles, 0.f, 100.f);
 					spu_usage = std::clamp(cpu_usage * spu_cycles / total_cycles, 0.f, 100.f);
@@ -430,13 +478,13 @@ namespace rsx
 				case detail_level::low:
 				{
 					if (cpu_usage < 0.)
-						cpu_usage = m_cpu_stats.get_usage();
+						cpu_usage = static_cast<f32>(m_cpu_stats.get_usage());
 
 					// fallthrough
 				}
 				case detail_level::minimal:
 				{
-					fps = m_force_update ? 0 : std::max(0.0, static_cast<f32>(m_frames) / (elapsed_update / 1000));
+					fps = m_force_update ? 0.f : std::max(0.f, static_cast<f32>(m_frames / (elapsed_update / 1000)));
 					if (m_is_initialised && m_framerate_graph_enabled)
 						m_fps_graph.record_datapoint(fps);
 				}
@@ -483,7 +531,7 @@ namespace rsx
 				}
 				}
 
-				m_body.text = perf_text;
+				m_body.set_text(perf_text);
 
 				if (m_body.auto_resize())
 				{
@@ -545,19 +593,17 @@ namespace rsx
 
 		void graph::set_pos(u16 _x, u16 _y)
 		{
-			overlay_element::set_pos(_x, _y);
-
-			m_label.set_pos(x, y + h);
+			m_label.set_pos(_x, _y);
+			overlay_element::set_pos(_x, _y + m_label.h);
 		}
 
 		void graph::set_size(u16 _w, u16 _h)
 		{
 			overlay_element::set_size(_w, _h);
 
-			set_padding(0, 0, h, 0);
-			m_label.set_size(w, m_label.h);
-
-			m_label.set_pos(x, y + h);
+			// Place label horizontally in the middle of the graph rect
+			const u16 label_x = std::max(x, u16(x + (w / 2) - (m_label.w / 2)));
+			m_label.set_pos(label_x, m_label.y);
 		}
 
 		void graph::set_title(const char* title)
@@ -572,7 +618,7 @@ namespace rsx
 
 		void graph::set_font_size(u16 font_size)
 		{
-			const auto font_name = m_label.get_font()->font_name.c_str();
+			const auto font_name = m_label.get_font()->get_name().data();
 			m_label.set_font(font_name, font_size);
 		}
 
@@ -590,6 +636,11 @@ namespace rsx
 		void graph::set_guide_interval(f32 guide_interval)
 		{
 			m_guide_interval = guide_interval;
+		}
+
+		u16 graph::get_height() const
+		{
+			return h + m_label.h + m_label.padding_top + m_label.padding_bottom;
 		}
 
 		void graph::record_datapoint(f32 datapoint)
@@ -614,11 +665,14 @@ namespace rsx
 
 		void graph::update()
 		{
-			m_label.set_text(fmt::format("%s  min:%5.2f max:%6.2f", m_title.c_str(), m_min, m_max));
+			m_label.set_text(fmt::format("%s\nmn:%4.1f mx:%4.1f", m_title.c_str(), m_min, m_max));
 			m_label.set_padding(4, 4, 0, 4);
 
 			m_label.auto_resize();
 			m_label.refresh();
+
+			// If label horizontal end is larger, widen graph width to match it
+			set_size(std::max(m_label.w, w), h);
 		}
 
 		compiled_resource& graph::get_compiled()
@@ -645,7 +699,7 @@ namespace rsx
 				{
 					const f32 guide_y = y + y_off * normalize_factor;
 					verts_guides.emplace_back(x, guide_y);
-					verts_guides.emplace_back(x + w, guide_y);
+					verts_guides.emplace_back(static_cast<float>(x + w), guide_y);
 				}
 			}
 
@@ -657,10 +711,10 @@ namespace rsx
 
 			auto& verts_graph = compiled_resources.draw_commands.back().verts;
 
-			const f32 x_stride = f32(w) / m_datapoint_count;
-			const u32 tail_index_offset = m_datapoints.size() - m_datapoint_count;
+			const f32 x_stride = w * 1.f / m_datapoint_count;
+			const u32 tail_index_offset = ::size32(m_datapoints, HERE) - m_datapoint_count;
 
-			for (size_t i = 0; i < m_datapoint_count; ++i)
+			for (u32 i = 0; i < m_datapoint_count; ++i)
 			{
 				const f32 x_line = x + i * x_stride;
 				const f32 y_line = y + h - (m_datapoints[tail_index_offset + i] * normalize_factor);
@@ -690,6 +744,8 @@ namespace rsx
 					{
 						perf_overlay = manager->create<rsx::overlays::perf_metrics_overlay>();
 					}
+
+					std::scoped_lock lock(*manager);
 
 					perf_overlay->set_detail_level(perf_settings.level);
 					perf_overlay->set_position(perf_settings.position);

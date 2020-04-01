@@ -1,7 +1,6 @@
 ﻿#include "stdafx.h"
 #include "sys_event_flag.h"
 
-#include "Emu/System.h"
 #include "Emu/IdManager.h"
 #include "Emu/IPC.h"
 
@@ -102,7 +101,7 @@ error_code sys_event_flag_wait(ppu_thread& ppu, u32 id, u64 bitptn, u32 mode, vm
 	ppu.gpr[6] = 0;
 
 	// Always set result
-	if (result) *result = ppu.gpr[6];
+	if (result) *result = 0;
 
 	if (!lv2_event_flag::check_mode(mode))
 	{
@@ -131,7 +130,7 @@ error_code sys_event_flag_wait(ppu_thread& ppu, u32 id, u64 bitptn, u32 mode, vm
 			return {};
 		}
 
-		if (flag.type == SYS_SYNC_WAITER_SINGLE && flag.sq.size())
+		if (flag.type == SYS_SYNC_WAITER_SINGLE && !flag.sq.empty())
 		{
 			return CELL_EPERM;
 		}
@@ -171,12 +170,17 @@ error_code sys_event_flag_wait(ppu_thread& ppu, u32 id, u64 bitptn, u32 mode, vm
 		{
 			if (lv2_obj::wait_timeout(timeout, &ppu))
 			{
+				// Wait for rescheduling
+				if (ppu.check_state())
+				{
+					return 0;
+				}
+
 				std::lock_guard lock(flag->mutex);
 
 				if (!flag->unqueue(flag->sq, &ppu))
 				{
-					timeout = 0;
-					continue;
+					break;
 				}
 
 				flag->waiters--;

@@ -2,7 +2,8 @@
 #include "Utilities/types.h"
 #include "Utilities/geometry.h"
 #include "Utilities/File.h"
-#include "Emu/System.h"
+#include "overlay_utils.h"
+#include "overlay_fonts.h"
 
 #include <string>
 #include <vector>
@@ -23,10 +24,6 @@
 #if defined(__DragonFly__) || defined(__FreeBSD__) || defined(__NetBSD__)
 #include <sys/sysctl.h>
 #endif
-
-// STB_IMAGE_IMPLEMENTATION and STB_TRUETYPE_IMPLEMENTATION defined externally
-#include <stb_image.h>
-#include <stb_truetype.h>
 
 // Definitions for common UI controls and their routines
 namespace rsx
@@ -51,145 +48,6 @@ namespace rsx
 			line_strip = 3
 		};
 
-		struct vertex
-		{
-			float values[4];
-
-			vertex() = default;
-
-			vertex(float x, float y)
-			{
-				vec2(x, y);
-			}
-
-			vertex(float x, float y, float z)
-			{
-				vec3(x, y, z);
-			}
-
-			vertex(float x, float y, float z, float w)
-			{
-				vec4(x, y, z, w);
-			}
-
-			vertex(int x, int y, int z, int w)
-			{
-				vec4(static_cast<f32>(x), static_cast<f32>(y), static_cast<f32>(z), static_cast<f32>(w));
-			}
-
-			float& operator[](int index)
-			{
-				return values[index];
-			}
-
-			void vec2(float x, float y)
-			{
-				values[0] = x;
-				values[1] = y;
-				values[2] = 0.f;
-				values[3] = 1.f;
-			}
-
-			void vec3(float x, float y, float z)
-			{
-				values[0] = x;
-				values[1] = y;
-				values[2] = z;
-				values[3] = 1.f;
-			}
-
-			void vec4(float x, float y, float z, float w)
-			{
-				values[0] = x;
-				values[1] = y;
-				values[2] = z;
-				values[3] = w;
-			}
-
-			void operator += (const vertex& other)
-			{
-				values[0] += other.values[0];
-				values[1] += other.values[1];
-				values[2] += other.values[2];
-				values[3] += other.values[3];
-			}
-
-			void operator -= (const vertex& other)
-			{
-				values[0] -= other.values[0];
-				values[1] -= other.values[1];
-				values[2] -= other.values[2];
-				values[3] -= other.values[3];
-			}
-		};
-
-		struct font
-		{
-			const u32 width = 1024;
-			const u32 height = 1024;
-			const u32 oversample = 2;
-			const u32 char_count = 256; // 16x16 grid at max 48pt
-
-			f32 size_pt = 12.f;
-			f32 size_px = 16.f; // Default font 12pt size
-			f32 em_size = 0.f;
-			std::string font_name;
-			std::vector<stbtt_packedchar> pack_info;
-			std::vector<u8> glyph_data;
-			bool initialized = false;
-
-			font(const char* ttf_name, f32 size);
-
-			stbtt_aligned_quad get_char(char c, f32& x_advance, f32& y_advance);
-
-			void render_text_ex(std::vector<vertex>& result, f32& x_advance, f32& y_advance, const char* text, u32 char_limit, u16 max_width, bool wrap);
-
-			std::vector<vertex> render_text(const char* text, u16 max_width = UINT16_MAX, bool wrap = false);
-
-			std::pair<f32, f32> get_char_offset(const char* text, u16 max_length, u16 max_width = UINT16_MAX, bool wrap = false);
-		};
-
-		// TODO: Singletons are cancer
-		class fontmgr
-		{
-		private:
-			std::vector<std::unique_ptr<font>> fonts;
-			static fontmgr *m_instance;
-
-			font* find(const char *name, int size)
-			{
-				for (auto &f : fonts)
-				{
-					if (f->font_name == name &&
-						f->size_pt == size)
-						return f.get();
-				}
-
-				fonts.push_back(std::make_unique<font>(name, static_cast<f32>(size)));
-				return fonts.back().get();
-			}
-
-		public:
-
-			fontmgr() = default;
-			~fontmgr()
-			{
-				if (m_instance)
-				{
-					delete m_instance;
-					m_instance = nullptr;
-				}
-			}
-
-			static font* get(const char *name, int size)
-			{
-				if (m_instance == nullptr)
-					m_instance = new fontmgr;
-
-				return m_instance->find(name, size);
-			}
-		};
-
 		struct image_info
 		{
 			int w = 0, h = 0;
@@ -202,7 +60,7 @@ namespace rsx
 			{
 				if (!fs::is_file(filename))
 				{
-					LOG_ERROR(RSX, "Image resource file `%s' not found", filename);
+					rsx_log.error("Image resource file `%s' not found", filename);
 					return;
 				}
 
@@ -472,7 +330,7 @@ namespace rsx
 			u16 w = 0;
 			u16 h = 0;
 
-			std::string text;
+			std::u32string text;
 			font* font_ref = nullptr;
 			text_align alignment = left;
 			bool wrap_text = false;
@@ -574,11 +432,11 @@ namespace rsx
 
 			virtual void set_text(const std::string& text)
 			{
-				this->text = text;
+				this->text = utf8_to_u32string(text);
 				is_compiled = false;
 			}
 
-			virtual void set_text(const char* text)
+			virtual void set_text(const std::u32string& text)
 			{
 				this->text = text;
 				is_compiled = false;
@@ -607,7 +465,7 @@ namespace rsx
 				return font_ref ? font_ref : fontmgr::get("Arial", 12);
 			}
 
-			virtual std::vector<vertex> render_text(const char *string, f32 x, f32 y)
+			virtual std::vector<vertex> render_text(const char32_t *string, f32 x, f32 y)
 			{
 				auto renderer = get_font();
 
@@ -626,7 +484,7 @@ namespace rsx
 						// Apply transform.
 						// (0, 0) has text sitting one line off the top left corner (text is outside the rect) hence the offset by text height
 						v.values[0] += x + padding_left;
-						v.values[1] += y + padding_top + static_cast<f32>(renderer->size_px);
+						v.values[1] += y + padding_top + static_cast<f32>(renderer->get_size_px());
 					}
 
 					if (alignment == center)
@@ -661,7 +519,7 @@ namespace rsx
 								continue;
 
 							const f32 line_length = result[p.second - 1].values[0] - result[p.first].values[0];
-							const bool wrapped = std::fabs(result[p.second - 1].values[1] - result[p.first + 3].values[1]) >= (renderer->size_px * 0.5f);
+							const bool wrapped = std::fabs(result[p.second - 1].values[1] - result[p.first + 3].values[1]) >= (renderer->get_size_px() * 0.5f);
 
 							if (wrapped)
 								continue;
@@ -737,13 +595,13 @@ namespace rsx
 				f32 unused = 0.f;
 				f32 max_w = 0.f;
 				f32 last_word = 0.f;
-				height = static_cast<u16>(renderer->size_px);
+				height = static_cast<u16>(renderer->get_size_px());
 
 				for (auto c : text)
 				{
 					if (c == '\n')
 					{
-						height += static_cast<u16>(renderer->size_px + 2);
+						height += static_cast<u16>(renderer->get_size_px() + 2);
 						max_w = std::max(max_w, text_width);
 						text_width = 0.f;
 						last_word = 0.f;
@@ -755,23 +613,15 @@ namespace rsx
 						last_word = text_width;
 					}
 
-					if (static_cast<u8>(c) > renderer->char_count)
-					{
-						// Non-existent glyph
-						text_width += renderer->em_size;
-					}
-					else
-					{
-						renderer->get_char(c, text_width, unused);
-					}
+					renderer->get_char(c, text_width, unused);
 
 					if (!ignore_word_wrap && wrap_text && text_width >= w)
 					{
 						if ((text_width - last_word) < w)
 						{
 							max_w = std::max(max_w, last_word);
-							text_width -= (last_word + renderer->em_size);
-							height += static_cast<u16>(renderer->size_px + 2);
+							text_width -= (last_word + renderer->get_em_size());
+							height += static_cast<u16>(renderer->get_size_px() + 2);
 						}
 					}
 				}
@@ -779,16 +629,6 @@ namespace rsx
 				max_w = std::max(max_w, text_width);
 				width = static_cast<u16>(ceilf(max_w));
 			}
-		};
-
-		struct animation_base
-		{
-			float duration = 0.f;
-			float t = 0.f;
-			overlay_element *ref = nullptr;
-
-			virtual void update(float /*elapsed*/) {}
-			void reset() { t = 0.f; }
 		};
 
 		struct layout_container : public overlay_element
@@ -892,7 +732,7 @@ namespace rsx
 						else if (item_y_limit > h || item_y_base < 0)
 						{
 							// Partial render
-							areaf clip_rect = areai{ x, y, (x + w), (y + h) };
+							areaf clip_rect = static_cast<areaf>(areai{x, y, (x + w), (y + h)});
 							result.add(item->get_compiled(), 0.f, global_y_offset, clip_rect);
 						}
 						else
@@ -966,7 +806,7 @@ namespace rsx
 						else if (item_x_limit > h || item_x_base < 0)
 						{
 							// Partial render
-							areaf clip_rect = areai{ x, y, (x + w), (y + h) };
+							areaf clip_rect = static_cast<areaf>(areai{x, y, (x + w), (y + h)});
 							result.add(item->get_compiled(), global_x_offset, 0.f, clip_rect);
 						}
 						else
@@ -1115,7 +955,7 @@ namespace rsx
 
 			label(const std::string& text)
 			{
-				this->text = text;
+				set_text(text);
 			}
 
 			bool auto_resize(bool grow_only = false, u16 limit_w = UINT16_MAX, u16 limit_h = UINT16_MAX)
@@ -1162,7 +1002,6 @@ namespace rsx
 			void set_pos(u16 _x, u16 _y) override;
 			void set_size(u16 _w, u16 _h) override;
 			void translate(s16 dx, s16 dy) override;
-			void set_text(const char* str) override;
 			void set_text(const std::string& str) override;
 
 			compiled_resource& get_compiled() override;
@@ -1196,7 +1035,7 @@ namespace rsx
 
 			int get_selected_index();
 
-			std::string get_selected_item();
+			std::u32string get_selected_item();
 
 			void set_cancel_only(bool cancel_only);
 			void translate(s16 _x, s16 _y) override;
@@ -1220,7 +1059,7 @@ namespace rsx
 			using label::label;
 
 			void move_caret(direction dir);
-			void insert_text(const std::string& str);
+			void insert_text(const std::u32string& str);
 			void erase();
 
 			compiled_resource& get_compiled() override;
@@ -1248,6 +1087,7 @@ namespace rsx
 			void set_count(u32 datapoint_count);
 			void set_color(color4f color);
 			void set_guide_interval(f32 guide_interval);
+			u16 get_height() const;
 			void record_datapoint(f32 datapoint);
 			void update();
 			compiled_resource& get_compiled() override;

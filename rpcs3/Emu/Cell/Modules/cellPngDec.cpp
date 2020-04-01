@@ -1,5 +1,5 @@
-#include "stdafx.h"
-#include "Emu/System.h"
+﻿#include "stdafx.h"
+#include "Emu/VFS.h"
 #include "Emu/IdManager.h"
 #include "Emu/Cell/PPUModule.h"
 
@@ -151,7 +151,7 @@ void pngDecError(png_structp png_ptr, png_const_charp error_message)
 {
 	cellPngDec.error("%s", error_message);
 	// we can't return here or libpng blows up
-	throw LibPngCustomException("Fatal Error in libpng");
+	report_fatal_error("Fatal Error in libpng");
 }
 
 // Custom warning handler for libpng
@@ -477,7 +477,7 @@ s32 pngDecOpen(ppu_thread& ppu, PHandle handle, PPStream png_stream, PSrc source
 	// Set the custom read function for decoding
 	if (control_stream)
 	{
-		if (open_param && open_param->selectChunk != 0)
+		if (open_param && open_param->selectChunk != 0u)
 			fmt::throw_exception("Partial Decoding with selectChunk not supported yet.");
 
 		stream->cbCtrlStream.cbCtrlStrmArg = control_stream->cbCtrlStrmArg;
@@ -486,14 +486,7 @@ s32 pngDecOpen(ppu_thread& ppu, PHandle handle, PPStream png_stream, PSrc source
 		png_set_progressive_read_fn(stream->png_ptr, stream.get_ptr(), pngDecInfoCallback, pngDecRowCallback, pngDecEndCallback);
 
 		// push header tag to libpng to keep us in sync
-		try
-		{
-			png_process_data(stream->png_ptr, stream->info_ptr, header, 8);
-		}
-		catch (LibPngCustomException&)
-		{
-			return CELL_PNGDEC_ERROR_HEADER;
-		}
+		png_process_data(stream->png_ptr, stream->info_ptr, header, 8);
 	}
 	else
 	{
@@ -559,14 +552,14 @@ s32 pngDecSetParameter(PStream stream, PInParam in_param, POutParam out_param, P
 	png_set_keep_unknown_chunks(stream->png_ptr, PNG_HANDLE_CHUNK_IF_SAFE, 0, 0);
 
 	// Scale 16 bit depth down to 8 bit depth.
-	if (stream->info.bitDepth == 16 && in_param->outputBitDepth == 8)
+	if (stream->info.bitDepth == 16u && in_param->outputBitDepth == 8u)
 	{
 		// PS3 uses png_set_strip_16, since png_set_scale_16 wasn't available back then.
 		png_set_strip_16(stream->png_ptr);
 	}
 
 	// This shouldnt ever happen, but not sure what to do if it does, just want it logged for now
-	if (stream->info.bitDepth != 16 && in_param->outputBitDepth == 16)
+	if (stream->info.bitDepth != 16u && in_param->outputBitDepth == 16u)
 		cellPngDec.error("Output depth of 16 with non input depth of 16 specified!");
 	if (in_param->commandPtr)
 		cellPngDec.warning("Ignoring CommandPtr.");
@@ -729,15 +722,7 @@ s32 pngDecodeData(ppu_thread& ppu, PHandle handle, PStream stream, vm::ptr<u8> d
 		if (stream->buffer->length > stream->buffer->cursor)
 		{
 			u8* data = static_cast<u8*>(stream->buffer->data.get_ptr()) + stream->buffer->cursor;
-			try
-			{
-				png_process_data(stream->png_ptr, stream->info_ptr, data, stream->buffer->length - stream->buffer->cursor);
-			}
-			catch (LibPngCustomException&)
-			{
-				freeMem();
-				return CELL_PNGDEC_ERROR_FATAL;
-			}
+			png_process_data(stream->png_ptr, stream->info_ptr, data, stream->buffer->length - stream->buffer->cursor);
 			streamInfo->decodedStrmSize = ::narrow<u32>(stream->buffer->length);
 		}
 
@@ -747,15 +732,7 @@ s32 pngDecodeData(ppu_thread& ppu, PHandle handle, PStream stream, vm::ptr<u8> d
 		{
 			stream->cbCtrlStream.cbCtrlStrmFunc(ppu, streamInfo, streamParam, stream->cbCtrlStream.cbCtrlStrmArg);
 			streamInfo->decodedStrmSize += streamParam->strmSize;
-			try
-			{
-				png_process_data(stream->png_ptr, stream->info_ptr, static_cast<u8*>(streamParam->strmPtr.get_ptr()), streamParam->strmSize);
-			}
-			catch (LibPngCustomException&)
-			{
-				freeMem();
-				return CELL_PNGDEC_ERROR_FATAL;
-			}
+			png_process_data(stream->png_ptr, stream->info_ptr, static_cast<u8*>(streamParam->strmPtr.get_ptr()), streamParam->strmSize);
 		}
 
 		freeMem();
@@ -767,7 +744,6 @@ s32 pngDecodeData(ppu_thread& ppu, PHandle handle, PStream stream, vm::ptr<u8> d
 
 		// Decode the image
 		// todo: commandptr
-		try
 		{
 			for (u32 j = 0; j < stream->passes; j++)
 			{
@@ -778,10 +754,6 @@ s32 pngDecodeData(ppu_thread& ppu, PHandle handle, PStream stream, vm::ptr<u8> d
 				}
 			}
 			png_read_end(stream->png_ptr, stream->info_ptr);
-		}
-		catch (LibPngCustomException&)
-		{
-			return CELL_PNGDEC_ERROR_FATAL;
 		}
 	}
 
@@ -862,21 +834,14 @@ s32 cellPngDecExtReadHeader(PHandle handle, PStream stream, PInfo info, PExtInfo
 
 	// lets push what we have so far
 	u8* data = static_cast<u8*>(stream->buffer->data.get_ptr()) + stream->buffer->cursor;
-	try
-	{
-		png_process_data(stream->png_ptr, stream->info_ptr, data, stream->buffer->length);
-	}
-	catch (LibPngCustomException&)
-	{
-		return CELL_PNGDEC_ERROR_HEADER;
-	}
+	png_process_data(stream->png_ptr, stream->info_ptr, data, stream->buffer->length);
 
 	// lets hope we pushed enough for callback
 	pngSetHeader(stream.get_ptr());
 
 	// png doesnt allow empty image, so quick check for 0 verifys if we got the header
 	// not sure exactly what should happen if we dont have header, ask for more data with callback?
-	if (stream->info.imageWidth == 0)
+	if (stream->info.imageWidth == 0u)
 	{
 		fmt::throw_exception("Invalid or not enough data sent to get header");
 		return CELL_PNGDEC_ERROR_HEADER;

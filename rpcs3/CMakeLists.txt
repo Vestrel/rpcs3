@@ -110,11 +110,13 @@ else()
 	target_link_libraries(rpcs3 ${CMAKE_DL_LIBS})
 endif()
 
-set_target_properties(rpcs3 PROPERTIES
-	COTIRE_CXX_PREFIX_HEADER_INIT "${RPCS3_SRC_DIR}/stdafx.h"
-	COTIRE_ADD_UNITY_BUILD OFF)
+if(USE_COTIRE)
+	set_target_properties(rpcs3 PROPERTIES
+		COTIRE_CXX_PREFIX_HEADER_INIT "${RPCS3_SRC_DIR}/stdafx.h"
+		COTIRE_ADD_UNITY_BUILD OFF)
 
-cotire(rpcs3)
+	cotire(rpcs3)
+endif()
 
 # Copy icons to executable directory
 if(APPLE)
@@ -133,7 +135,7 @@ elseif(UNIX)
 elseif(WIN32)
 	add_custom_command(TARGET rpcs3 POST_BUILD
 			COMMAND "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/bin" "$<TARGET_FILE_DIR:rpcs3>"
-			COMMAND "${Qt5_DIR}/../../../bin/windeployqt" --no-angle --no-compiler-runtime --no-opengl-sw --no-patchqt --no-svg --no-translations --no-quick --plugindir "$<TARGET_FILE_DIR:rpcs3>/qt/plugins" "$<TARGET_FILE:rpcs3>")
+			COMMAND "${Qt5_DIR}/../../../bin/windeployqt" --no-angle --no-compiler-runtime --no-opengl-sw --no-patchqt --no-svg --no-translations --no-quick --plugindir "$<TARGET_FILE_DIR:rpcs3>/qt/plugins" --release "$<TARGET_FILE:rpcs3>")
 endif()
 
 # Unix installation

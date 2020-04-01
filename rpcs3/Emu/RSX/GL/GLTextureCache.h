@@ -12,7 +12,6 @@
 #include <chrono>
 
 #include "Utilities/mutex.h"
-#include "Emu/System.h"
 #include "GLRenderTargets.h"
 #include "GLOverlays.h"
 #include "GLTexture.h"
@@ -171,7 +170,7 @@ namespace gl
 
 			pixel_pack_settings pack_settings;
 			pack_settings.alignment(1);
-			//pack_settings.swap_bytes(pack_unpack_swap_bytes);
+			pack_settings.swap_bytes(pack_unpack_swap_bytes);
 
 			src->copy_to(nullptr, format, type, pack_settings);
 			real_pitch = src->pitch();
@@ -184,11 +183,11 @@ namespace gl
 					// AMD driver bug
 					// Pixel transfer fails with GL_OUT_OF_MEMORY. Usually happens with float textures or operations attempting to swap endianness.
 					// Failed operations also leak a large amount of memory
-					LOG_ERROR(RSX, "Memory transfer failure (AMD bug). Please update your driver to Adrenalin 19.4.3 or newer. Format=0x%x, Type=0x%x, Swap=%d", static_cast<u32>(format), static_cast<u32>(type), pack_unpack_swap_bytes);
+					rsx_log.error("Memory transfer failure (AMD bug). Please update your driver to Adrenalin 19.4.3 or newer. Format=0x%x, Type=0x%x, Swap=%d", static_cast<u32>(format), static_cast<u32>(type), pack_unpack_swap_bytes);
 				}
 				else
 				{
-					LOG_ERROR(RSX, "Memory transfer failed with error 0x%x. Format=0x%x, Type=0x%x", error, static_cast<u32>(format), static_cast<u32>(type));
+					rsx_log.error("Memory transfer failed with error 0x%x. Format=0x%x, Type=0x%x", error, static_cast<u32>(format), static_cast<u32>(type));
 				}
 			}
 
@@ -203,7 +202,7 @@ namespace gl
 		{
 			ASSERT(exists());
 
-			if (LIKELY(!miss))
+			if (!miss) [[likely]]
 			{
 				baseclass::on_speculative_flush();
 			}
@@ -313,7 +312,7 @@ namespace gl
 				{
 					verify(HERE), pack_unpack_swap_bytes == false;
 					verify(HERE), real_pitch == (width * 4);
-					if (LIKELY(rsx_pitch == real_pitch))
+					if (rsx_pitch == real_pitch) [[likely]]
 					{
 						rsx::convert_le_d24x8_to_be_d24x8(dst, dst, valid_length / 4, 1);
 					}
@@ -597,7 +596,7 @@ namespace gl
 					surface->transform_samples_to_pixels(src_x, src_w, src_y, src_h);
 				}
 
-				if (UNLIKELY(typeless))
+				if (typeless) [[unlikely]]
 				{
 					const auto src_bpp = slice.src->pitch() / slice.src->width();
 					const u16 convert_w = u16(slice.src->width() * src_bpp) / dst_bpp;
@@ -608,6 +607,17 @@ namespace gl
 					// Compute src region in dst format layout
 					const u16 src_w2 = u16(src_w * src_bpp) / dst_bpp;
 					const u16 src_x2 = u16(src_x * src_bpp) / dst_bpp;
+
+					if (src_w2 == slice.dst_w && src_h == slice.dst_h && slice.level == 0)
+					{
+						// Optimization, avoid typeless copy to tmp followed by data copy to dst
+						// Combine the two transfers into one
+						const coord3u src_region = { { src_x, src_y, 0 }, { src_w, src_h, 1 } };
+						const coord3u dst_region = { { slice.dst_x, slice.dst_y, slice.dst_z }, { slice.dst_w, slice.dst_h, 1 } };
+						gl::copy_typeless(dst_image, slice.src, dst_region, src_region);
+
+						continue;
+					}
 
 					const coord3u src_region = { { src_x, src_y, 0 }, { src_w, src_h, 1 } };
 					const coord3u dst_region = { { src_x2, src_y, 0 }, { src_w2, src_h, 1 } };
@@ -656,7 +666,7 @@ namespace gl
 
 		gl::texture* get_template_from_collection_impl(const std::vector<copy_region_descriptor>& sections_to_transfer) const
 		{
-			if (LIKELY(sections_to_transfer.size() == 1))
+			if (sections_to_transfer.size() == 1) [[likely]]
 			{
 				return sections_to_transfer.front().src;
 			}
@@ -719,7 +729,7 @@ namespace gl
 
 			if (GLenum err = glGetError())
 			{
-				LOG_WARNING(RSX, "Failed to copy image subresource with GL error 0x%X", err);
+				rsx_log.warning("Failed to copy image subresource with GL error 0x%X", err);
 				return nullptr;
 			}
 
@@ -741,7 +751,7 @@ namespace gl
 
 			if (GLenum err = glGetError())
 			{
-				LOG_WARNING(RSX, "Failed to copy image subresource with GL error 0x%X", err);
+				rsx_log.warning("Failed to copy image subresource with GL error 0x%X", err);
 				return nullptr;
 			}
 

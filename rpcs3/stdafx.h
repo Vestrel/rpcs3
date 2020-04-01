@@ -8,10 +8,6 @@
 
 #define NOMINMAX
 
-//#ifndef __STDC_CONSTANT_MACROS
-//#define __STDC_CONSTANT_MACROS
-//#endif
-
 #if defined(MSVC_CRT_MEMLEAK_DETECTION) && defined(_DEBUG) && !defined(DBG_NEW)
 	#define DBG_NEW new ( _NORMAL_BLOCK , __FILE__ , __LINE__ )
 	#include "define_new_memleakdetect.h"
@@ -29,7 +25,7 @@ namespace std { inline namespace literals { inline namespace chrono_literals {}}
 #include "util/atomic.hpp"
 #include "Utilities/StrFmt.h"
 #include "Utilities/File.h"
-#include "Utilities/Log.h"
+#include "util/logs.hpp"
 
 #include <cstdlib>
 #include <cstring>

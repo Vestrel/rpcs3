@@ -1,7 +1,9 @@
 #include "bin_patch.h"
-#include <yaml-cpp/yaml.h>
+#include "util/yaml.hpp"
 #include "File.h"
 #include "Config.h"
+
+LOG_CHANNEL(patch_log);
 
 template <>
 void fmt_class_string<patch_type>::format(std::string& out, u64 arg)
@@ -32,15 +34,11 @@ void patch_engine::append(const std::string& patch)
 {
 	if (fs::file f{patch})
 	{
-		YAML::Node root;
+		auto [root, error] = yaml_load(f.to_string());
 
-		try
+		if (!error.empty())
 		{
-			root = YAML::Load(f.to_string());
-		}
-		catch (const std::exception& e)
-		{
-			LOG_FATAL(GENERAL, "Failed to load patch file %s\n%s thrown: %s", patch, typeid(e).name(), e.what());
+			patch_log.fatal("Failed to load patch file %s:\n%s", patch, error);
 			return;
 		}
 
@@ -172,4 +170,79 @@ std::size_t patch_engine::apply(const std::string& name, u8* dst) const
 	}
 
 	return found->second.size();
+}
+
+std::size_t patch_engine::apply_with_ls_check(const std::string& name, u8* dst, u32 filesz, u32 ls_addr) const
+{
+	u32 rejected = 0;
+
+	const auto found = m_map.find(name);
+
+	if (found == m_map.cend())
+	{
+		return 0;
+	}
+
+	// Apply modifications sequentially
+	for (const auto& p : found->second)
+	{
+		auto ptr = dst + (p.offset - ls_addr);
+
+		if(p.offset < ls_addr || p.offset >= (ls_addr + filesz))
+		{
+			// This patch is out of range for this segment
+			rejected++;
+			continue;
+		}
+
+		switch (p.type)
+		{
+		case patch_type::load:
+		{
+			// Invalid in this context
+			break;
+		}
+		case patch_type::byte:
+		{
+			*ptr = static_cast<u8>(p.value);
+			break;
+		}
+		case patch_type::le16:
+		{
+			*reinterpret_cast<le_t<u16, 1>*>(ptr) = static_cast<u16>(p.value);
+			break;
+		}
+		case patch_type::le32:
+		case patch_type::lef32:
+		{
+			*reinterpret_cast<le_t<u32, 1>*>(ptr) = static_cast<u32>(p.value);
+			break;
+		}
+		case patch_type::le64:
+		case patch_type::lef64:
+		{
+			*reinterpret_cast<le_t<u64, 1>*>(ptr) = static_cast<u64>(p.value);
+			break;
+		}
+		case patch_type::be16:
+		{
+			*reinterpret_cast<be_t<u16, 1>*>(ptr) = static_cast<u16>(p.value);
+			break;
+		}
+		case patch_type::be32:
+		case patch_type::bef32:
+		{
+			*reinterpret_cast<be_t<u32, 1>*>(ptr) = static_cast<u32>(p.value);
+			break;
+		}
+		case patch_type::be64:
+		case patch_type::bef64:
+		{
+			*reinterpret_cast<be_t<u64, 1>*>(ptr) = static_cast<u64>(p.value);
+			break;
+		}
+		}
+	}
+
+	return (found->second.size() - rejected);
 }

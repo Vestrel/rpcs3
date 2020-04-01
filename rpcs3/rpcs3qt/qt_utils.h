@@ -1,7 +1,7 @@
 ﻿#pragma once
 
 #include "stdafx.h"
-#include <QtCore>
+#include <QDir>
 #include <QComboBox>
 #include <QFont>
 #include <QIcon>
@@ -13,6 +13,12 @@ namespace gui
 {
 	namespace utils
 	{
+		template<typename T>
+		static QSet<T> list_to_set(const QList<T>& list)
+		{
+			return QSet<T>(list.begin(), list.end());
+		}
+
 		// Creates a frame geometry rectangle with given width height that's centered inside the origin,
 		// while still considering screen boundaries.
 		QRect create_centered_window_geometry(const QRect& origin, s32 width, s32 height);
@@ -50,5 +56,11 @@ namespace gui
 
 		// Loads the app icon from path and embeds it centered into an empty square icon
 		QIcon get_app_icon_from_path(const std::string& path, const std::string& title_id);
+
+		// Open a path in the explorer and mark the file
+		void open_dir(const std::string& spath);
+
+		// Open a path in the explorer and mark the file
+		void open_dir(const QString& path);
 	} // utils
 } // gui

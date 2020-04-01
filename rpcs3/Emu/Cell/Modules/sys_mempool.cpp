@@ -2,8 +2,6 @@
 
 #include "Utilities/StrUtil.h"
 
-#include "Emu/System.h"
-#include "Emu/IdManager.h"
 #include "Emu/Cell/PPUModule.h"
 
 #include "Emu/Cell/lv2/sys_mutex.h"
@@ -11,8 +9,7 @@
 
 #include "sysPrxForUser.h"
 
-
-extern logs::channel sysPrxForUser;
+LOG_CHANNEL(sysPrxForUser);
 
 using sys_mempool_t = u32;
 
@@ -72,9 +69,9 @@ s32 sys_mempool_create(ppu_thread& ppu, vm::ptr<sys_mempool_t> mempool, vm::ptr<
 	// TODO: check blocks alignment wrt ralignment
 	u64 num_blocks = chunk_size / block_size;
 	memory_pool->free_blocks.resize(num_blocks);
-	for (int i = 0; i < num_blocks; ++i)
+	for (u32 i = 0; i < num_blocks; ++i)
 	{
-		memory_pool->free_blocks[i] = vm::ptr<void>::make(chunk.addr() + i * block_size);
+		memory_pool->free_blocks[i] = vm::ptr<void>::make(chunk.addr() + i * static_cast<u32>(block_size));
 	}
 
 	// Create synchronization variables
@@ -123,7 +120,7 @@ void sys_mempool_destroy(ppu_thread& ppu, sys_mempool_t mempool)
 		u32 mutexid = memory_pool->mutexid;
 
 		sys_mutex_lock(ppu, memory_pool->mutexid, 0);
-		idm::remove<memory_pool_t>(mempool);
+		idm::remove_verify<memory_pool_t>(mempool, std::move(memory_pool));
 		sys_mutex_unlock(ppu, mutexid);
 		sys_mutex_destroy(ppu, mutexid);
 		sys_cond_destroy(ppu, condid);

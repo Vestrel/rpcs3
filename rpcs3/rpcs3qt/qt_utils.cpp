@@ -1,10 +1,12 @@
-﻿
-#include "qt_utils.h"
+﻿#include "qt_utils.h"
 #include <QApplication>
 #include <QBitmap>
+#include <QDesktopServices>
 #include <QFontMetrics>
 #include <QPainter>
+#include <QProcess>
 #include <QScreen>
+#include <QUrl>
 
 #include "Emu/System.h"
 
@@ -84,6 +86,7 @@ namespace gui
 				white_pixmap.setMask(white_mask);
 
 				QPainter painter(&pixmap);
+				painter.setRenderHint(QPainter::SmoothPixmapTransform);
 				painter.drawPixmap(QPoint(0, 0), white_pixmap);
 				//painter.drawPixmap(QPoint(0, 0), test_pixmap);
 				painter.end();
@@ -238,7 +241,8 @@ namespace gui
 		{
 			// get Icon for the gs_frame from path. this handles presumably all possible use cases
 			const QString qpath = qstr(path);
-			const std::string path_list[] = { path, sstr(qpath.section("/", 0, -2)), sstr(qpath.section("/", 0, -3)) };
+			const std::string path_list[] = { path, sstr(qpath.section("/", 0, -2, QString::SectionIncludeTrailingSep)),
+			                                  sstr(qpath.section("/", 0, -3, QString::SectionIncludeTrailingSep)) };
 
 			for (const std::string& pth : path_list)
 			{
@@ -253,19 +257,20 @@ namespace gui
 				{
 					// load the image from path. It will most likely be a rectangle
 					QImage source = QImage(qstr(ico));
-					int edgeMax = std::max(source.width(), source.height());
+					const int edge_max = std::max(source.width(), source.height());
 
 					// create a new transparent image with square size and same format as source (maybe handle other formats than RGB32 as well?)
 					QImage::Format format = source.format() == QImage::Format_RGB32 ? QImage::Format_ARGB32 : source.format();
-					QImage dest = QImage(edgeMax, edgeMax, format);
-					dest.fill(QColor("transparent"));
+					QImage dest = QImage(edge_max, edge_max, format);
+					dest.fill(Qt::transparent);
 
 					// get the location to draw the source image centered within the dest image.
-					QPoint destPos = source.width() > source.height() ? QPoint(0, (source.width() - source.height()) / 2) : QPoint((source.height() - source.width()) / 2, 0);
+					const QPoint dest_pos = source.width() > source.height() ? QPoint(0, (source.width() - source.height()) / 2) : QPoint((source.height() - source.width()) / 2, 0);
 
 					// Paint the source into/over the dest
 					QPainter painter(&dest);
-					painter.drawImage(destPos, source);
+					painter.setRenderHint(QPainter::SmoothPixmapTransform);
+					painter.drawImage(dest_pos, source);
 					painter.end();
 
 					return QIcon(QPixmap::fromImage(dest));
@@ -273,6 +278,35 @@ namespace gui
 			}
 			// if nothing was found reset the icon to default
 			return QApplication::windowIcon();
+		}
+
+		void open_dir(const std::string& spath)
+		{
+			fs::create_dir(spath);
+			const QString path = qstr(spath);
+
+			if (fs::is_file(spath))
+			{
+				// open directory and select file
+				// https://stackoverflow.com/questions/3490336/how-to-reveal-in-finder-or-show-in-explorer-with-qt
+#ifdef _WIN32
+				QProcess::startDetached("explorer.exe", { "/select,", QDir::toNativeSeparators(path) });
+#elif defined(__APPLE__)
+				QProcess::execute("/usr/bin/osascript", { "-e", "tell application \"Finder\" to reveal POSIX file \"" + path + "\"" });
+				QProcess::execute("/usr/bin/osascript", { "-e", "tell application \"Finder\" to activate" });
+#else
+		// open parent directory
+				QDesktopServices::openUrl(QUrl("file:///" + qstr(fs::get_parent_dir(spath))));
+#endif
+				return;
+			}
+
+			QDesktopServices::openUrl(QUrl("file:///" + path));
+		}
+
+		void open_dir(const QString& path)
+		{
+			open_dir(sstr(path));
 		}
 	} // utils
 } // gui

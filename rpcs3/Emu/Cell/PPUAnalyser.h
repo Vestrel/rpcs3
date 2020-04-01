@@ -554,18 +554,9 @@ struct ppu_itype
 	}
 };
 
-// Encode instruction name: 6 bits per character (0x20..0x5f), max 10
-static constexpr u64 ppu_iname_encode(const char* ptr, u64 value = 0)
-{
-	return *ptr == '\0' ? value : ppu_iname_encode(ptr + 1, (*ptr - 0x20) | (value << 6));
-}
-
 struct ppu_iname
 {
-#define NAME(x) x = ppu_iname_encode(#x),
-
-	enum type : u64
-	{
+#define NAME(x) static constexpr const char& x = *#x;
 	NAME(UNK)
 	NAME(MFVSCR)
 	NAME(MTVSCR)
@@ -946,15 +937,7 @@ struct ppu_iname
 	NAME(FCTID)
 	NAME(FCTIDZ)
 	NAME(FCFID)
-	};
-
 #undef NAME
-
-	// Enable address-of operator for ppu_decoder<>
-	friend constexpr type operator &(type value)
-	{
-		return value;
-	}
 };
 
 // PPU Analyser Context
@@ -1029,7 +1012,7 @@ struct ppu_acontext
 			const u64 bdiv = rhs.div();
 
 			// Check overflow, generate normalized range
-			if (adiv != -1 && bdiv != -1 && adiv <= adiv + bdiv)
+			if (adiv != umax && bdiv != umax && adiv <= adiv + bdiv)
 			{
 				r = range(imin + rhs.imin, imax + rhs.imax);
 			}

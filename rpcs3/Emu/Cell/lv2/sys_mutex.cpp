@@ -1,7 +1,6 @@
 ﻿#include "stdafx.h"
 #include "sys_mutex.h"
 
-#include "Emu/System.h"
 #include "Emu/IdManager.h"
 #include "Emu/IPC.h"
 
@@ -51,6 +50,11 @@ error_code sys_mutex_create(ppu_thread& ppu, vm::ptr<u32> mutex_id, vm::ptr<sys_
 	if (attr->adaptive != SYS_SYNC_NOT_ADAPTIVE)
 	{
 		sys_mutex.todo("sys_mutex_create(): unexpected adaptive (0x%x)", attr->adaptive);
+	}
+
+	if (attr->ipc_key != 0)
+	{
+		sys_mutex.todo("mutexipc = 0x%Xll", attr->ipc_key);
 	}
 
 	if (auto error = lv2_obj::create<lv2_mutex>(attr->pshared, attr->ipc_key, attr->flags, [&]()
@@ -165,12 +169,17 @@ error_code sys_mutex_lock(ppu_thread& ppu, u32 mutex_id, u64 timeout)
 		{
 			if (lv2_obj::wait_timeout(timeout, &ppu))
 			{
+				// Wait for rescheduling
+				if (ppu.check_state())
+				{
+					return 0;
+				}
+
 				std::lock_guard lock(mutex->mutex);
 
 				if (!mutex->unqueue(mutex->sq, &ppu))
 				{
-					timeout = 0;
-					continue;
+					break;
 				}
 
 				ppu.gpr[3] = CELL_ETIMEDOUT;

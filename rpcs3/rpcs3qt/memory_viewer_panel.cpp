@@ -1,7 +1,17 @@
-#include "stdafx.h"
-#include "Emu/Memory/vm.h"
+﻿#include "stdafx.h"
+#include "Utilities/mutex.h"
+#include "Emu/Memory/vm_locking.h"
 
 #include "memory_viewer_panel.h"
+
+#include <QVBoxLayout>
+#include <QPushButton>
+#include <QSpinBox>
+#include <QGroupBox>
+#include <QTextEdit>
+#include <QComboBox>
+#include <QWheelEvent>
+#include <shared_mutex>
 
 constexpr auto qstr = QString::fromStdString;
 
@@ -194,14 +204,14 @@ memory_viewer_panel::memory_viewer_panel(QWidget* parent)
 	setLayout(vbox_panel);
 
 	//Events
-	connect(m_addr_line, &QLineEdit::returnPressed, [=]
+	connect(m_addr_line, &QLineEdit::returnPressed, [=, this]()
 	{
 		bool ok;
 		m_addr = m_addr_line->text().toULong(&ok, 16);
 		m_addr_line->setText(QString("%1").arg(m_addr, 8, 16, QChar('0')));	// get 8 digits in input line
 		ShowMemory();
 	});
-	connect(sb_bytes, static_cast<void (QSpinBox::*)(int)>(&QSpinBox::valueChanged), [=]
+	connect(sb_bytes, static_cast<void (QSpinBox::*)(int)>(&QSpinBox::valueChanged), [=, this]()
 	{
 		m_colcount = sb_bytes->value();
 		m_mem_hex->setFixedSize(QSize(pSize * 3 * m_colcount + 6, 228));
@@ -209,11 +219,11 @@ memory_viewer_panel::memory_viewer_panel(QWidget* parent)
 		ShowMemory();
 	});
 
-	connect(b_prev, &QAbstractButton::clicked, [=]() { m_addr -= m_colcount; ShowMemory(); });
-	connect(b_next, &QAbstractButton::clicked, [=]() { m_addr += m_colcount; ShowMemory(); });
-	connect(b_fprev, &QAbstractButton::clicked, [=]() { m_addr -= m_rowcount * m_colcount; ShowMemory(); });
-	connect(b_fnext, &QAbstractButton::clicked, [=]() { m_addr += m_rowcount * m_colcount; ShowMemory(); });
-	connect(b_img, &QAbstractButton::clicked, [=]
+	connect(b_prev, &QAbstractButton::clicked, [=, this]() { m_addr -= m_colcount; ShowMemory(); });
+	connect(b_next, &QAbstractButton::clicked, [=, this]() { m_addr += m_colcount; ShowMemory(); });
+	connect(b_fprev, &QAbstractButton::clicked, [=, this]() { m_addr -= m_rowcount * m_colcount; ShowMemory(); });
+	connect(b_fnext, &QAbstractButton::clicked, [=, this]() { m_addr += m_rowcount * m_colcount; ShowMemory(); });
+	connect(b_img, &QAbstractButton::clicked, [=, this]()
 	{
 		int mode = cbox_img_mode->currentIndex();
 		int sizex = sb_img_size_x->value();
@@ -265,10 +275,9 @@ void memory_viewer_panel::ShowMemory()
 
 			if (vm::check_addr(addr))
 			{
-				const u8 rmem = vm::read8(addr);
+				const u8 rmem = *vm::get_super_ptr<u8>(addr);
 				t_mem_hex_str += qstr(fmt::format("%02x ", rmem));
-				const bool isPrintable = rmem >= 32 && rmem <= 126;
-				t_mem_ascii_str += qstr(isPrintable ? std::string(1, rmem) : ".");
+				t_mem_ascii_str += qstr(std::string(1, std::isprint(rmem) ? static_cast<char>(rmem) : '.'));
 			}
 			else
 			{
@@ -306,8 +315,15 @@ void memory_viewer_panel::SetPC(const uint pc)
 
 void memory_viewer_panel::ShowImage(QWidget* parent, u32 addr, int mode, u32 width, u32 height, bool flipv)
 {
-	uchar* originalBuffer  = static_cast<uchar*>(vm::base(addr));
-	uchar* convertedBuffer = static_cast<uchar*>(std::malloc(width * height * 4));
+	std::shared_lock rlock(vm::g_mutex);
+
+	if (!vm::check_addr(addr, width * height * 4))
+	{
+		return;
+	}
+
+	const auto originalBuffer  = vm::get_super_ptr<const uchar>(addr);
+	const auto convertedBuffer = static_cast<uchar*>(std::malloc(width * height * 4));
 
 	switch(mode)
 	{
@@ -364,6 +380,8 @@ void memory_viewer_panel::ShowImage(QWidget* parent, u32 addr, int mode, u32 wid
 	break;
 	}
 
+	rlock.unlock();
+
 	// Flip vertically
 	if (flipv)
 	{
@@ -378,7 +396,7 @@ void memory_viewer_panel::ShowImage(QWidget* parent, u32 addr, int mode, u32 wid
 		}
 	}
 
-	QImage image = QImage(convertedBuffer, width, height, QImage::Format_ARGB32);
+	QImage image = QImage(convertedBuffer, width, height, QImage::Format_ARGB32, [](void* buffer){ std::free(buffer); }, convertedBuffer);
 	if (image.isNull()) return;
 
 	QLabel* canvas = new QLabel();

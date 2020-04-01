@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "../../Utilities/types.h"
 #include "../../Utilities/File.h"
@@ -188,6 +188,10 @@ public:
 	std::vector<prog_t> progs;
 	std::vector<shdr_t> shdrs;
 
+	std::vector<uchar> symtable;
+	std::vector<uchar> secstrtable;
+	std::vector<uchar> strtable;
+
 public:
 	elf_object() = default;
 
@@ -232,13 +236,13 @@ public:
 			return set_error(elf_error::header_type);
 
 		// Check version and other params
-		if (header.e_curver != 1 || header.e_version != 1 || header.e_ehsize != sizeof(ehdr_t))
+		if (header.e_curver != 1 || header.e_version != 1u || header.e_ehsize != u16{sizeof(ehdr_t)})
 			return set_error(elf_error::header_version);
 
-		if (header.e_phnum && header.e_phentsize != sizeof(phdr_t))
+		if (header.e_phnum && header.e_phentsize != u16{sizeof(phdr_t)})
 			return set_error(elf_error::header_version);
 
-		if (header.e_shnum && header.e_shentsize != sizeof(shdr_t))
+		if (header.e_shnum && header.e_shentsize != u16{sizeof(shdr_t)})
 			return set_error(elf_error::header_version);
 
 		// Load program headers
@@ -274,6 +278,53 @@ public:
 				stream.seek(offset + hdr.p_offset);
 				if (!stream.read(progs.back().bin))
 					return set_error(elf_error::stream_data);
+			}
+		}
+
+		if (!(opts & elf_opt::no_data) && !(opts & elf_opt::no_sections))
+		{
+			// load symtable
+			for (const auto& s : shdrs)
+			{
+				if (s.sh_type == 2 /*SHT_SYMTAB*/)
+				{
+					symtable.resize(s.sh_size);
+					stream.seek(offset + s.sh_offset);
+					if (!stream.read(symtable))
+					{
+						symtable.clear();
+					}
+					break;
+				}
+			}
+
+			// load sec string table
+			if (header.e_shstrndx != 0 /*SHN_UNDEF*/)
+			{
+				const auto& strtab = shdrs.at(header.e_shstrndx);
+				if (strtab.sh_type == 3 /*SHT_STRTAB*/)
+				{
+					secstrtable.resize(strtab.sh_size);
+					stream.seek(offset + strtab.sh_offset);
+					if (!stream.read(secstrtable))
+					{
+						secstrtable.clear();
+					}
+				}
+			}
+
+			for (const auto& s : shdrs)
+			{
+				if (strcmp((char*)&secstrtable.at(s.sh_name), ".strtab") == 0)
+				{
+					strtable.resize(s.sh_size);
+					stream.seek(offset + s.sh_offset);
+					if (!stream.read(strtable))
+					{
+						strtable.clear();
+					}
+					break;
+				}
 			}
 		}
 

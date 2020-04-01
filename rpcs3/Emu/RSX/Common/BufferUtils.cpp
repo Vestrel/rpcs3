@@ -8,6 +8,11 @@
 
 #define DEBUG_VERTEX_STREAMING 0
 
+#if !defined(_MSC_VER) && defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wold-style-cast"
+#endif
+
 #if defined(_MSC_VER)
 #define SSSE3_FUNC
 #define SSE4_1_FUNC
@@ -88,7 +93,7 @@ namespace
 		const u32 iterations = dword_count >> 2;
 		const u32 remaining = dword_count % 4;
 
-		if (LIKELY(s_use_ssse3))
+		if (s_use_ssse3) [[likely]]
 		{
 			for (u32 i = 0; i < iterations; ++i)
 			{
@@ -139,7 +144,7 @@ namespace
 		const u32 iterations = word_count >> 3;
 		const u32 remaining = word_count % 8;
 
-		if (LIKELY(s_use_ssse3))
+		if (s_use_ssse3) [[likely]]
 		{
 			for (u32 i = 0; i < iterations; ++i)
 			{
@@ -199,7 +204,7 @@ namespace
 		else
 			remainder = vertex_count;
 
-		if (LIKELY(s_use_ssse3))
+		if (s_use_ssse3) [[likely]]
 		{
 			for (u32 i = 0; i < iterations; ++i)
 			{
@@ -266,7 +271,7 @@ namespace
 		else
 			remainder = vertex_count;
 
-		if (LIKELY(s_use_ssse3))
+		if (s_use_ssse3) [[likely]]
 		{
 			for (u32 i = 0; i < iterations; ++i)
 			{
@@ -599,7 +604,7 @@ namespace
 			auto src_stream = static_cast<const __m128i*>(src);
 			auto dst_stream = static_cast<__m128i*>(dst);
 
-			__m128i min = _mm_set1_epi16(0xFFFF);
+			__m128i min = _mm_set1_epi16(-1);
 			__m128i max = _mm_set1_epi16(0);
 
 			const auto iterations = count / 8;
@@ -666,7 +671,7 @@ namespace
 		{
 			T min_index, max_index;
 			u32 written;
-			u32 remaining = src.size();
+			u32 remaining = ::size32(src, HERE);
 
 			if (s_use_sse4_1 && remaining >= 32)
 			{
@@ -724,7 +729,7 @@ namespace
 			auto dst_stream = static_cast<__m256i*>(dst);
 
 			__m256i restart = _mm256_set1_epi16(restart_index);
-			__m256i min = _mm256_set1_epi16(0xffff);
+			__m256i min = _mm256_set1_epi16(-1);
 			__m256i max = _mm256_set1_epi16(0);
 
 			for (unsigned n = 0; n < iterations; ++n)
@@ -767,7 +772,7 @@ namespace
 			auto dst_stream = static_cast<__m128i*>(dst);
 
 			__m128i restart = _mm_set1_epi16(restart_index);
-			__m128i min = _mm_set1_epi16(0xffff);
+			__m128i min = _mm_set1_epi16(-1);
 			__m128i max = _mm_set1_epi16(0);
 
 			for (unsigned n = 0; n < iterations; ++n)
@@ -840,7 +845,7 @@ namespace
 			T min_index = index_limit<T>();
 			T max_index = 0;
 			u32 written = 0;
-			u32 length = src.size();
+			u32 length = ::size32(src, HERE);
 
 			if (length >= 32 && !skip_restart)
 			{
@@ -1148,7 +1153,7 @@ namespace
 		rsx::primitive_type draw_mode, bool restart_index_enabled, u32 restart_index,
 		const std::function<bool(rsx::primitive_type)>& expands)
 	{
-		if (LIKELY(!expands(draw_mode)))
+		if (!expands(draw_mode)) [[likely]]
 		{
 			return upload_untouched<T>(src, dst, draw_mode, restart_index_enabled, restart_index);
 		}

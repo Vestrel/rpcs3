@@ -1,19 +1,23 @@
 ﻿#include "log_frame.h"
 #include "qt_utils.h"
+#include "gui_settings.h"
+
 #include "stdafx.h"
 #include "rpcs3_version.h"
 #include "Utilities/sysinfo.h"
+#include "Utilities/mutex.h"
+#include "Utilities/lockless.h"
 
 #include <QMenu>
 #include <QActionGroup>
 #include <QScrollBar>
-#include <QTabBar>
 #include <QVBoxLayout>
+#include <QTimer>
+#include <QStringBuilder>
+
 #include <sstream>
 #include <deque>
 #include <mutex>
-#include "Utilities/mutex.h"
-#include "Utilities/lockless.h"
 
 extern fs::file g_tty;
 extern atomic_t<s64> g_tty_size;
@@ -24,7 +28,7 @@ constexpr auto qstr = QString::fromStdString;
 
 struct gui_listener : logs::listener
 {
-	atomic_t<logs::level> enabled{logs::level::_uninit};
+	atomic_t<logs::level> enabled{logs::level{UINT_MAX}};
 
 	struct packet_t
 	{
@@ -363,7 +367,7 @@ void log_frame::CreateAndConnectActions()
 		}
 		else
 		{
-			text = fmt::format("%s > %s\n", "Ch.%d", m_tty_channel, text);
+			text = fmt::format("Ch.%d > %s\n", m_tty_channel, text);
 		}
 
 		if (g_tty)
@@ -438,13 +442,13 @@ void log_frame::UpdateUI()
 		buf.resize(size);
 		buf.resize(m_tty_file.read(&buf.front(), buf.size()));
 
-		if (buf.find_first_of('\0') != -1)
+		if (buf.find_first_of('\0') != umax)
 		{
 			m_tty_file.seek(s64{0} - buf.size(), fs::seek_mode::seek_cur);
 			break;
 		}
 
-		if (buf.size() && m_TTYAct->isChecked())
+		if (!buf.empty() && m_TTYAct->isChecked())
 		{
 			std::stringstream buf_stream;
 			buf_stream.str(buf);
@@ -517,7 +521,11 @@ void log_frame::UpdateUI()
 	const auto font_start_tag = [](const QColor& color) -> const QString { return QStringLiteral("<font color = \"") % color.name() % QStringLiteral("\">"); };
 	const QString font_start_tag_stack = "<font color = \"" % m_color_stack.name() % "\">";
 	const QString font_end_tag = QStringLiteral("</font>");
-	const QString br_tag = QStringLiteral("<br/>");
+
+	static constexpr auto escaped = [](QString& text)
+	{
+		return text.toHtmlEscaped().replace(QStringLiteral("\n"), QStringLiteral("<br/>"));
+	};
 
 	// Check main logs
 	while (auto* packet = s_gui_listener.get())
@@ -566,7 +574,7 @@ void log_frame::UpdateUI()
 				{
 					text_cursor.movePosition(QTextCursor::End, QTextCursor::MoveAnchor);
 					text_cursor.movePosition(QTextCursor::StartOfBlock, QTextCursor::KeepAnchor);
-					text_cursor.insertHtml(font_start_tag(m_color[static_cast<int>(packet->sev)]) % text.replace("\n", br_tag) % font_start_tag_stack % QStringLiteral(" x") % QString::number(++m_log_counter) % font_end_tag % font_end_tag);
+					text_cursor.insertHtml(font_start_tag(m_color[static_cast<int>(packet->sev)]) % escaped(text) % font_start_tag_stack % QStringLiteral(" x") % QString::number(++m_log_counter) % font_end_tag % font_end_tag);
 				}
 				else
 				{
@@ -574,13 +582,13 @@ void log_frame::UpdateUI()
 					m_old_log_text = text;
 
 					m_log->setTextCursor(text_cursor);
-					m_log->appendHtml(font_start_tag(m_color[static_cast<int>(packet->sev)]) % text.replace("\n", br_tag) % font_end_tag);
+					m_log->appendHtml(font_start_tag(m_color[static_cast<int>(packet->sev)]) % escaped(text) % font_end_tag);
 				}
 			}
 			else
 			{
 				m_log->setTextCursor(text_cursor);
-				m_log->appendHtml(font_start_tag(m_color[static_cast<int>(packet->sev)]) % text.replace("\n", br_tag) % font_end_tag);
+				m_log->appendHtml(font_start_tag(m_color[static_cast<int>(packet->sev)]) % escaped(text) % font_end_tag);
 			}
 
 			// if we mark text from right to left we need to swap sides (start is always smaller than end)
@@ -627,7 +635,7 @@ bool log_frame::eventFilter(QObject* object, QEvent* event)
 			if (m_find_dialog && m_find_dialog->isVisible())
 				m_find_dialog->close();
 
-			m_find_dialog = std::make_unique<find_dialog>(static_cast<QTextEdit*>(object), this);
+			m_find_dialog.reset(new find_dialog(static_cast<QTextEdit*>(object), this));
 		}
 	}
 

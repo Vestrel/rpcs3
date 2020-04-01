@@ -1,23 +1,30 @@
 ﻿#pragma once
 
 #ifdef _WIN32
-#include <QWinTaskbarProgress>
-#include <QWinTaskbarButton>
 #include <QWinTHumbnailToolbar>
 #include <QWinTHumbnailToolbutton>
 #endif
 
+#include <QActionGroup>
 #include <QMainWindow>
-#include <QPushButton>
 #include <QIcon>
+#include <QMimeData>
 
-#include "log_frame.h"
-#include "debugger_frame.h"
-#include "game_list_frame.h"
-#include "gui_settings.h"
 #include "update_manager.h"
+#include "settings.h"
 
 #include <memory>
+
+class log_frame;
+class debugger_frame;
+class game_list_frame;
+class gui_settings;
+class emu_settings;
+class persistent_settings;
+
+struct gui_game_info;
+
+enum class game_boot_result : u32;
 
 namespace Ui
 {
@@ -35,7 +42,7 @@ class main_window : public QMainWindow
 	bool m_save_slider_pos = false;
 	int m_other_slider_pos = 0;
 
-	QIcon m_appIcon;
+	QIcon m_app_icon;
 	QIcon m_icon_play;
 	QIcon m_icon_pause;
 	QIcon m_icon_stop;
@@ -67,24 +74,26 @@ class main_window : public QMainWindow
 	};
 
 public:
-	explicit main_window(std::shared_ptr<gui_settings> guiSettings, std::shared_ptr<emu_settings> emuSettings, QWidget *parent = 0);
+	explicit main_window(std::shared_ptr<gui_settings> gui_settings, std::shared_ptr<emu_settings> emu_settings, std::shared_ptr<persistent_settings> persistent_settings, QWidget *parent = 0);
 	void Init();
 	~main_window();
 	QIcon GetAppIcon();
 
 Q_SIGNALS:
-	void RequestGlobalStylesheetChange(const QString& sheetFilePath);
+	void RequestLanguageChange(const QString& language);
+	void RequestGlobalStylesheetChange(const QString& stylesheet_path);
 	void RequestTrophyManagerRepaint();
 	void NotifyEmuSettingsChange();
 
 public Q_SLOTS:
 	void OnEmuStop();
-	void OnEmuRun();
+	void OnEmuRun(bool start_playtime);
 	void OnEmuResume();
 	void OnEmuPause();
 	void OnEmuReady();
 
 	void RepaintGui();
+	void RetranslateUI(const QStringList& language_codes, const QString& language);
 
 private Q_SLOTS:
 	void OnPlayOrPause();
@@ -93,6 +102,7 @@ private Q_SLOTS:
 	void BootGame();
 	void BootRsxCapture(std::string path = "");
 	void DecryptSPRXLibraries();
+	void show_boot_error(game_boot_result result);
 
 	void SaveWindowState();
 	void ConfigureGuiFromSettings(bool configure_all = false);
@@ -116,33 +126,43 @@ private:
 	void CreateDockWindows();
 	void EnableMenus(bool enabled);
 	void ShowTitleBars(bool show);
-	void InstallPkg(const QString& dropPath = "", bool is_bulk = false);
-	void InstallPup(const QString& dropPath = "");
 
-	int IsValidFile(const QMimeData& md, QStringList* dropPaths = nullptr);
+	void InstallPackages(QStringList file_paths = QStringList(), bool show_confirm = true);
+	void HandlePackageInstallation(QStringList file_paths = QStringList());
+
+	void InstallPup(QString filePath = "");
+	void HandlePupInstallation(QString file_path = "");
+
+	int IsValidFile(const QMimeData& md, QStringList* drop_paths = nullptr);
 	void AddGamesFromDir(const QString& path);
 
 	QAction* CreateRecentAction(const q_string_pair& entry, const uint& sc_idx);
 	void BootRecentAction(const QAction* act);
 	void AddRecentAction(const q_string_pair& entry);
+
+	void UpdateLanguageActions(const QStringList& language_codes, const QString& language);
+
 	void RemoveDiskCache();
 
+	QString GetCurrentTitle();
+
 	q_pair_list m_rg_entries;
-	QList<QAction*> m_recentGameActs;
+	QList<QAction*> m_recent_game_acts;
 
-	QActionGroup* m_iconSizeActGroup = nullptr;
-	QActionGroup* m_listModeActGroup = nullptr;
-	QActionGroup* m_categoryVisibleActGroup = nullptr;
+	std::shared_ptr<gui_game_info> m_selected_game;
 
-	QMessageBox::StandardButton m_install_bulk = QMessageBox::NoButton;
+	QActionGroup* m_icon_size_act_group = nullptr;
+	QActionGroup* m_list_mode_act_group = nullptr;
+	QActionGroup* m_category_visible_act_group = nullptr;
 
 	// Dockable widget frames
 	QMainWindow *m_mw = nullptr;
-	log_frame* m_logFrame = nullptr;
-	debugger_frame* m_debuggerFrame = nullptr;
-	game_list_frame* m_gameListFrame = nullptr;
-	std::shared_ptr<gui_settings> guiSettings;
-	std::shared_ptr<emu_settings> emuSettings;
+	log_frame* m_log_frame = nullptr;
+	debugger_frame* m_debugger_frame = nullptr;
+	game_list_frame* m_game_list_frame = nullptr;
+	std::shared_ptr<gui_settings> m_gui_settings;
+	std::shared_ptr<emu_settings> m_emu_settings;
+	std::shared_ptr<persistent_settings> m_persistent_settings;
 
 	update_manager m_updater;
 };

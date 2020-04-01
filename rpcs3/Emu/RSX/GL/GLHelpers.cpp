@@ -2,7 +2,7 @@
 #include "GLHelpers.h"
 #include "GLTexture.h"
 #include "GLCompute.h"
-#include "Utilities/Log.h"
+#include "util/logs.hpp"
 
 namespace gl
 {
@@ -49,12 +49,12 @@ namespace gl
 		{
 		case GL_DEBUG_TYPE_ERROR:
 		{
-			LOG_ERROR(RSX, "%s", message);
+			rsx_log.error("%s", message);
 			return;
 		}
 		default:
 		{
-			LOG_WARNING(RSX, "%s", message);
+			rsx_log.warning("%s", message);
 			return;
 		}
 		}
@@ -120,7 +120,7 @@ namespace gl
 
 		if (status != GL_FRAMEBUFFER_COMPLETE)
 		{
-			LOG_ERROR(RSX, "FBO check failed: 0x%04x", status);
+			rsx_log.error("FBO check failed: 0x%04x", status);
 			return false;
 		}
 
@@ -381,6 +381,35 @@ namespace gl
 		std::unique_ptr<texture> typeless_dst;
 		const gl::texture* real_src = src;
 		const gl::texture* real_dst = dst;
+
+		// Optimization pass; check for pass-through data transfer
+		if (!xfer_info.flip_horizontal && !xfer_info.flip_vertical && src_rect.height() == dst_rect.height())
+		{
+			auto src_w = src_rect.width();
+			auto dst_w = dst_rect.width();
+
+			if (xfer_info.src_is_typeless) src_w = static_cast<int>(src_w * xfer_info.src_scaling_hint);
+			if (xfer_info.dst_is_typeless) dst_w = static_cast<int>(dst_w * xfer_info.dst_scaling_hint);
+
+			if (src_w == dst_w)
+			{
+				// Final dimensions are a match
+				if (xfer_info.src_is_typeless || xfer_info.dst_is_typeless)
+				{
+					const coord3i src_region = { { src_rect.x1, src_rect.y1, 0 }, { src_rect.width(), src_rect.height(), 1 } };
+					const coord3i dst_region = { { dst_rect.x1, dst_rect.y1, 0 }, { dst_rect.width(), dst_rect.height(), 1 } };
+					gl::copy_typeless(dst, src, static_cast<coord3u>(dst_region), static_cast<coord3u>(src_region));
+				}
+				else
+				{
+					glCopyImageSubData(src->id(), GL_TEXTURE_2D, 0, src_rect.x1, src_rect.y1, 0,
+						dst->id(), GL_TEXTURE_2D, 0, dst_rect.x1, dst_rect.y1, 0,
+						src_rect.width(), src_rect.height(), 1);
+				}
+
+				return;
+			}
+		}
 
 		if (xfer_info.src_is_typeless)
 		{

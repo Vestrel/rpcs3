@@ -129,8 +129,7 @@ static fs::error to_error(DWORD e)
 	case ERROR_DIR_NOT_EMPTY: return fs::error::notempty;
 	case ERROR_NOT_READY: return fs::error::noent;
 	case ERROR_FILENAME_EXCED_RANGE: return fs::error::toolong;
-	//case ERROR_INVALID_PARAMETER: return fs::error::inval;
-	default: fmt::throw_exception("Unknown Win32 error: %u.", e);
+	default: return fs::error::unknown;
 	}
 }
 
@@ -171,7 +170,7 @@ static fs::error to_error(int e)
 	case ENOTEMPTY: return fs::error::notempty;
 	case EROFS: return fs::error::readonly;
 	case EISDIR: return fs::error::isdir;
-	default: fmt::throw_exception("Unknown system error: %d.", e);
+	default: return fs::error::unknown;
 	}
 }
 
@@ -304,7 +303,7 @@ std::shared_ptr<fs::device_base> fs::device_manager::set_device(const std::strin
 std::shared_ptr<fs::device_base> fs::get_virtual_device(const std::string& path)
 {
 	// Every virtual device path must have "//" at the beginning
-	if (path.size() > 2 && reinterpret_cast<const u16&>(path.front()) == "//"_u16)
+	if (path.starts_with("//"))
 	{
 		return get_device_manager().get_device(path);
 	}
@@ -314,7 +313,7 @@ std::shared_ptr<fs::device_base> fs::get_virtual_device(const std::string& path)
 
 std::shared_ptr<fs::device_base> fs::set_virtual_device(const std::string& name, const std::shared_ptr<device_base>& device)
 {
-	verify(HERE), name.size() > 2, name[0] == '/', name[1] == '/', name.find('/', 2) == -1;
+	verify(HERE), name.starts_with("//"), name[2] != '/';
 
 	return get_device_manager().set_device(name, device);
 }
@@ -338,7 +337,7 @@ std::string fs::get_parent_dir(const std::string& path)
 		if (std::exchange(last, pos - 1) != pos)
 		{
 			// Return empty string if the path doesn't contain at least 2 elements
-			return path.substr(0, pos != -1 && path.find_last_not_of(delim, pos, sizeof(delim) - 1) != -1 ? pos : 0);
+			return path.substr(0, pos != umax && path.find_last_not_of(delim, pos, sizeof(delim) - 1) != umax ? pos : 0);
 		}
 	}
 }
@@ -1147,7 +1146,7 @@ fs::file::file(const std::string& path, bs_t<open_mode> mode)
 		return;
 	}
 
-	if (mode & fs::trunc && mode & (fs::lock + fs::unread))
+	if (mode & fs::trunc && mode & (fs::lock + fs::unread) && mode & fs::write)
 	{
 		// Postpone truncation in order to avoid using O_TRUNC on a locked file
 		verify(HERE), ::ftruncate(fd, 0) == 0;
@@ -1314,8 +1313,7 @@ fs::file::file(const void* ptr, std::size_t size)
 			const s64 new_pos =
 				whence == fs::seek_set ? offset :
 				whence == fs::seek_cur ? offset + m_pos :
-				whence == fs::seek_end ? offset + size() :
-				(fmt::raw_error("fs::file::memory_stream::seek(): invalid whence"), 0);
+				whence == fs::seek_end ? offset + size() : -1;
 
 			if (new_pos < 0)
 			{
@@ -1639,7 +1637,14 @@ u64 fs::get_dir_size(const std::string& path, u64 rounding_alignment)
 {
 	u64 result = 0;
 
-	for (const auto entry : dir(path))
+	const auto root_dir = dir(path);
+
+	if (!root_dir)
+	{
+		return static_cast<u64>(umax);
+	}
+
+	for (const auto& entry : root_dir)
 	{
 		if (entry.name == "." || entry.name == "..")
 		{
@@ -1653,7 +1658,14 @@ u64 fs::get_dir_size(const std::string& path, u64 rounding_alignment)
 
 		if (entry.is_directory == true)
 		{
-			result += get_dir_size(path_append(path, entry.name), rounding_alignment);
+			const u64 size = get_dir_size(path_append(path, entry.name), rounding_alignment);
+
+			if (size == umax)
+			{
+				return size;
+			}
+
+			result += size;
 		}
 	}
 
@@ -1752,8 +1764,7 @@ fs::file fs::make_gather(std::vector<fs::file> files)
 			const s64 new_pos =
 				whence == fs::seek_set ? offset :
 				whence == fs::seek_cur ? offset + pos :
-				whence == fs::seek_end ? offset + end :
-				(fmt::raw_error("fs::gather_stream::seek(): invalid whence"), 0);
+				whence == fs::seek_end ? offset + end : -1;
 
 			if (new_pos < 0)
 			{
@@ -1809,6 +1820,7 @@ void fmt_class_string<fs::error>::format(std::string& out, u64 arg)
 		case fs::error::readonly: return "Read only";
 		case fs::error::isdir: return "Is a directory";
 		case fs::error::toolong: return "Path too long";
+		case fs::error::unknown: return "Unknown system error";
 		}
 
 		return unknown;

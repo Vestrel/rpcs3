@@ -1,6 +1,4 @@
 ﻿#include "stdafx.h"
-#include "Emu/Memory/vm.h"
-#include "Emu/System.h"
 #include "VKFragmentProgram.h"
 #include "VKCommonDecompiler.h"
 #include "VKHelpers.h"
@@ -104,7 +102,7 @@ void VKFragmentDecompilerThread::insertOutputs(std::stringstream & OS)
 	u8 output_index = 0;
 	const bool float_type = (m_ctrl & CELL_GCM_SHADER_CONTROL_32_BITS_EXPORTS) || !device_props.has_native_half_support;
 	const auto reg_type = float_type ? "vec4" : getHalfTypeName(4);
-	for (int i = 0; i < std::size(table); ++i)
+	for (uint i = 0; i < std::size(table); ++i)
 	{
 		if (m_parr.HasParam(PF_PARAM_NONE, reg_type, table[i].second))
 		{
@@ -116,7 +114,7 @@ void VKFragmentDecompilerThread::insertOutputs(std::stringstream & OS)
 
 void VKFragmentDecompilerThread::insertConstants(std::stringstream & OS)
 {
-	u32 location = TEXTURES_FIRST_BIND_SLOT;
+	u32 location = m_binding_table.textures_first_bind_slot;
 	for (const ParamType& PT : m_parr.params[PF_PARAM_UNIFORM])
 	{
 		if (PT.type != "sampler1D" &&
@@ -137,7 +135,7 @@ void VKFragmentDecompilerThread::insertConstants(std::stringstream & OS)
 				if (m_shadow_sampled_textures & mask)
 				{
 					if (m_2d_sampled_textures & mask)
-						LOG_ERROR(RSX, "Texture unit %d is sampled as both a shadow texture and a depth texture", index);
+						rsx_log.error("Texture unit %d is sampled as both a shadow texture and a depth texture", index);
 					else
 						samplerType = "sampler2DShadow";
 				}
@@ -166,9 +164,7 @@ void VKFragmentDecompilerThread::insertConstants(std::stringstream & OS)
 		}
 	}
 
-	// Some drivers (macOS) do not support more than 16 texture descriptors per stage
-	// TODO: If any application requires more than this, the layout can be restructured a bit
-	verify("Too many sampler descriptors!" HERE), location <= VERTEX_TEXTURES_FIRST_BIND_SLOT;
+	verify("Too many sampler descriptors!" HERE), location <= m_binding_table.vertex_textures_first_bind_slot;
 
 	std::string constants_block;
 	for (const ParamType& PT : m_parr.params[PF_PARAM_UNIFORM])
@@ -211,17 +207,17 @@ void VKFragmentDecompilerThread::insertConstants(std::stringstream & OS)
 	OS << "};\n\n";
 
 	vk::glsl::program_input in;
-	in.location = FRAGMENT_CONSTANT_BUFFERS_BIND_SLOT;
+	in.location = m_binding_table.fragment_constant_buffers_bind_slot;
 	in.domain = glsl::glsl_fragment_program;
 	in.name = "FragmentConstantsBuffer";
 	in.type = vk::glsl::input_type_uniform_buffer;
 	inputs.push_back(in);
 
-	in.location = FRAGMENT_STATE_BIND_SLOT;
+	in.location = m_binding_table.fragment_state_bind_slot;
 	in.name = "FragmentStateBuffer";
 	inputs.push_back(in);
 
-	in.location = FRAGMENT_TEXTURE_PARAMS_BIND_SLOT;
+	in.location = m_binding_table.fragment_texture_params_bind_slot;
 	in.name = "TextureParametersBuffer";
 	inputs.push_back(in);
 }
@@ -270,7 +266,7 @@ void VKFragmentDecompilerThread::insertMainStart(std::stringstream & OS)
 	for (auto &reg_name : output_registers)
 	{
 		const auto type = (reg_name[0] == 'r' || !device_props.has_native_half_support)? "vec4" : half4;
-		if (LIKELY(reg_type == type))
+		if (reg_type == type) [[likely]]
 		{
 			registers += ", " + reg_name + " = " + type + "(0.)";
 		}
@@ -364,6 +360,7 @@ void VKFragmentDecompilerThread::insertMainEnd(std::stringstream & OS)
 
 void VKFragmentDecompilerThread::Task()
 {
+	m_binding_table = vk::get_current_renderer()->get_pipeline_binding_table();
 	m_shader = Decompile();
 	vk_prog->SetInputs(inputs);
 }

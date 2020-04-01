@@ -16,7 +16,6 @@
 #endif
 
 #include "Emu/RSX/GSRender.h"
-#include "Emu/System.h"
 #include "VulkanAPI.h"
 #include "VKCommonDecompiler.h"
 #include "../GCM.h"
@@ -33,18 +32,6 @@
 
 #define DESCRIPTOR_MAX_DRAW_CALLS 16384
 #define OCCLUSION_MAX_POOL_SIZE   DESCRIPTOR_MAX_DRAW_CALLS
-
-#define VERTEX_PARAMS_BIND_SLOT 0
-#define VERTEX_CONSTANT_BUFFERS_BIND_SLOT 1
-#define FRAGMENT_CONSTANT_BUFFERS_BIND_SLOT 2
-#define FRAGMENT_STATE_BIND_SLOT 3
-#define FRAGMENT_TEXTURE_PARAMS_BIND_SLOT 4
-#define VERTEX_BUFFERS_FIRST_BIND_SLOT 5
-#define CONDITIONAL_RENDER_PREDICATE_SLOT 8
-#define TEXTURES_FIRST_BIND_SLOT 9
-#define VERTEX_TEXTURES_FIRST_BIND_SLOT (TEXTURES_FIRST_BIND_SLOT + 16)
-
-#define VK_NUM_DESCRIPTOR_BINDINGS (VERTEX_TEXTURES_FIRST_BIND_SLOT + 4)
 
 #define FRAME_PRESENT_TIMEOUT 10000000ull // 10 seconds
 #define GENERAL_WAIT_TIMEOUT  2000000ull  // 2 seconds
@@ -127,6 +114,8 @@ namespace vk
 	struct memory_type_mapping;
 	struct gpu_formats_support;
 	struct fence;
+	struct pipeline_binding_table;
+	class event;
 
 	const vk::context *get_current_thread_ctx();
 	void set_current_thread_ctx(const vk::context &ctx);
@@ -153,13 +142,14 @@ namespace vk
 	VkImageAspectFlags get_aspect_flags(VkFormat format);
 
 	VkSampler null_sampler();
-	image_view* null_image_view(vk::command_buffer&);
+	image_view* null_image_view(vk::command_buffer&, VkImageViewType type);
 	image* get_typeless_helper(VkFormat format, u32 requested_width, u32 requested_height);
-	buffer* get_scratch_buffer();
+	buffer* get_scratch_buffer(u32 min_required_size = 0);
 	data_heap* get_upload_heap();
 
 	memory_type_mapping get_memory_mapping(const physical_device& dev);
 	gpu_formats_support get_optimal_tiling_supported_formats(const physical_device& dev);
+	pipeline_binding_table get_pipeline_binding_table(const physical_device& dev);
 
 	// Sync helpers around vkQueueSubmit
 	void acquire_global_submit_lock();
@@ -219,6 +209,10 @@ namespace vk
 		VkPipelineStageFlags src_stage, VkPipelineStageFlags dst_stage, VkAccessFlags src_mask, VkAccessFlags dst_mask,
 		const VkImageSubresourceRange& range);
 
+	void insert_execution_barrier(VkCommandBuffer cmd,
+		VkPipelineStageFlags src_stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+		VkPipelineStageFlags dst_stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+
 	void raise_status_interrupt(runtime_state status);
 	void clear_status_interrupt(runtime_state status);
 	bool test_status_interrupt(runtime_state status);
@@ -234,13 +228,27 @@ namespace vk
 	// Fence reset with driver workarounds in place
 	void reset_fence(fence* pFence);
 	VkResult wait_for_fence(fence* pFence, u64 timeout = 0ull);
-	VkResult wait_for_event(VkEvent pEvent, u64 timeout = 0ull);
+	VkResult wait_for_event(event* pEvent, u64 timeout = 0ull);
 
 	// Handle unexpected submit with dangling occlusion query
 	// TODO: Move queries out of the renderer!
 	void do_query_cleanup(vk::command_buffer& cmd);
 
 	void die_with_error(const char* faulting_addr, VkResult error_code);
+
+	struct pipeline_binding_table
+	{
+		u8 vertex_params_bind_slot = 0;
+		u8 vertex_constant_buffers_bind_slot = 1;
+		u8 fragment_constant_buffers_bind_slot = 2;
+		u8 fragment_state_bind_slot = 3;
+		u8 fragment_texture_params_bind_slot = 4;
+		u8 vertex_buffers_first_bind_slot = 5;
+		u8 conditional_render_predicate_slot = 8;
+		u8 textures_first_bind_slot = 9;
+		u8 vertex_textures_first_bind_slot = 9;  // Invalid, has to be initialized properly
+		u8 total_descriptor_bindings = vertex_textures_first_bind_slot; // Invalid, has to be initialized properly
+	};
 
 	struct memory_type_mapping
 	{
@@ -616,14 +624,14 @@ private:
 			vkGetPhysicalDeviceMemoryProperties(pdev, &memory_properties);
 			get_physical_device_features(allow_extensions);
 
-			LOG_NOTICE(RSX, "Found vulkan-compatible GPU: '%s' running on driver %s", get_name(), get_driver_version());
+			rsx_log.notice("Found vulkan-compatible GPU: '%s' running on driver %s", get_name(), get_driver_version());
 
 			if (get_driver_vendor() == driver_vendor::RADV &&
-				get_name().find("LLVM 8.0.0") != std::string::npos)
+				get_name().find("LLVM 8.0.0") != umax)
 			{
 				// Serious driver bug causing black screens
 				// See https://bugs.freedesktop.org/show_bug.cgi?id=110970
-				LOG_FATAL(RSX, "RADV drivers have a major driver bug with LLVM 8.0.0 resulting in no visual output. Upgrade to LLVM version 8.0.1 or greater to avoid this issue.");
+				rsx_log.fatal("RADV drivers have a major driver bug with LLVM 8.0.0 resulting in no visual output. Upgrade to LLVM version 8.0.1 or greater to avoid this issue.");
 			}
 
 			if (get_chip_class() == chip_class::AMD_vega)
@@ -643,22 +651,22 @@ private:
 			if (!driver_properties.driverID)
 			{
 				const auto gpu_name = get_name();
-				if (gpu_name.find("Radeon") != std::string::npos)
+				if (gpu_name.find("Radeon") != umax)
 				{
 					return driver_vendor::AMD;
 				}
 
-				if (gpu_name.find("NVIDIA") != std::string::npos || gpu_name.find("GeForce") != std::string::npos)
+				if (gpu_name.find("NVIDIA") != umax || gpu_name.find("GeForce") != umax)
 				{
 					return driver_vendor::NVIDIA;
 				}
 
-				if (gpu_name.find("RADV") != std::string::npos)
+				if (gpu_name.find("RADV") != umax)
 				{
 					return driver_vendor::RADV;
 				}
 
-				if (gpu_name.find("Intel") != std::string::npos)
+				if (gpu_name.find("Intel") != umax)
 				{
 					return driver_vendor::INTEL;
 				}
@@ -768,6 +776,7 @@ private:
 		physical_device *pgpu = nullptr;
 		memory_type_mapping memory_map{};
 		gpu_formats_support m_formats_support{};
+		pipeline_binding_table m_pipeline_binding_table{};
 		std::unique_ptr<mem_allocator_base> m_allocator;
 		VkDevice dev = VK_NULL_HANDLE;
 
@@ -837,7 +846,7 @@ private:
 				{
 					// TODO: Slow fallback to emulate this
 					// Just warn and let the driver decide whether to crash or not
-					LOG_FATAL(RSX, "Your GPU driver does not support some required MSAA features. Expect problems.");
+					rsx_log.fatal("Your GPU driver does not support some required MSAA features. Expect problems.");
 				}
 
 				enabled_features.sampleRateShading = VK_TRUE;
@@ -858,20 +867,20 @@ private:
 			// Optionally disable unsupported stuff
 			if (!pgpu->features.depthBounds)
 			{
-				LOG_ERROR(RSX, "Your GPU does not support depth bounds testing. Graphics may not work correctly.");
+				rsx_log.error("Your GPU does not support depth bounds testing. Graphics may not work correctly.");
 				enabled_features.depthBounds = VK_FALSE;
 			}
 
 			if (!pgpu->features.sampleRateShading && enabled_features.sampleRateShading)
 			{
-				LOG_ERROR(RSX, "Your GPU does not support sample rate shading for multisampling. Graphics may be inaccurate when MSAA is enabled.");
+				rsx_log.error("Your GPU does not support sample rate shading for multisampling. Graphics may be inaccurate when MSAA is enabled.");
 				enabled_features.sampleRateShading = VK_FALSE;
 			}
 
 			if (!pgpu->features.alphaToOne && enabled_features.alphaToOne)
 			{
 				// AMD proprietary drivers do not expose alphaToOne support
-				LOG_ERROR(RSX, "Your GPU does not support alpha-to-one for multisampling. Graphics may be inaccurate when MSAA is enabled.");
+				rsx_log.error("Your GPU does not support alpha-to-one for multisampling. Graphics may be inaccurate when MSAA is enabled.");
 				enabled_features.alphaToOne = VK_FALSE;
 			}
 
@@ -894,11 +903,11 @@ private:
 				shader_support_info.shaderFloat16 = VK_TRUE;
 				device.pNext = &shader_support_info;
 
-				LOG_NOTICE(RSX, "GPU/driver supports float16 data types natively. Using native float16_t variables if possible.");
+				rsx_log.notice("GPU/driver supports float16 data types natively. Using native float16_t variables if possible.");
 			}
 			else
 			{
-				LOG_NOTICE(RSX, "GPU/driver lacks support for float16 data types. All float16_t arithmetic will be emulated with float32_t.");
+				rsx_log.notice("GPU/driver lacks support for float16 data types. All float16_t arithmetic will be emulated with float32_t.");
 			}
 
 			CHECK_RESULT(vkCreateDevice(*pgpu, &device, nullptr, &dev));
@@ -917,6 +926,7 @@ private:
 
 			memory_map = vk::get_memory_mapping(pdev);
 			m_formats_support = vk::get_optimal_tiling_supported_formats(pdev);
+			m_pipeline_binding_table = vk::get_pipeline_binding_table(pdev);
 
 			if (g_cfg.video.disable_vulkan_mem_allocator)
 				m_allocator = std::make_unique<vk::mem_allocator_vk>(dev, pdev);
@@ -992,6 +1002,11 @@ private:
 		const gpu_formats_support& get_formats_support() const
 		{
 			return m_formats_support;
+		}
+
+		const pipeline_binding_table& get_pipeline_binding_table() const
+		{
+			return m_pipeline_binding_table;
 		}
 
 		const gpu_shader_types_support& get_shader_types_support() const
@@ -1076,9 +1091,9 @@ private:
 
 	struct fence
 	{
-		volatile bool flushed = false;
-		VkFence handle        = VK_NULL_HANDLE;
-		VkDevice owner        = VK_NULL_HANDLE;
+		atomic_t<bool> flushed = false;
+		VkFence handle         = VK_NULL_HANDLE;
+		VkDevice owner         = VK_NULL_HANDLE;
 
 		fence(VkDevice dev)
 		{
@@ -1100,7 +1115,12 @@ private:
 		void reset()
 		{
 			vkResetFences(owner, 1, &handle);
-			flushed = false;
+			flushed.release(false);
+		}
+
+		void signal_flushed()
+		{
+			flushed.release(true);
 		}
 
 		void wait_flush()
@@ -1235,7 +1255,7 @@ private:
 		{
 			if (!is_open)
 			{
-				LOG_ERROR(RSX, "commandbuffer->end was called but commandbuffer is not in a recording state");
+				rsx_log.error("commandbuffer->end was called but commandbuffer is not in a recording state");
 				return;
 			}
 
@@ -1243,11 +1263,11 @@ private:
 			is_open = false;
 		}
 
-		void submit(VkQueue queue, VkSemaphore wait_semaphore, VkSemaphore signal_semaphore, fence* pfence, VkPipelineStageFlags pipeline_stage_flags)
+		void submit(VkQueue queue, VkSemaphore wait_semaphore, VkSemaphore signal_semaphore, fence* pfence, VkPipelineStageFlags pipeline_stage_flags, VkBool32 flush = VK_FALSE)
 		{
 			if (is_open)
 			{
-				LOG_ERROR(RSX, "commandbuffer->submit was called whilst the command buffer is in a recording state");
+				rsx_log.error("commandbuffer->submit was called whilst the command buffer is in a recording state");
 				return;
 			}
 
@@ -1278,7 +1298,7 @@ private:
 				infos.pSignalSemaphores = &signal_semaphore;
 			}
 
-			queue_submit(queue, &infos, pfence);
+			queue_submit(queue, &infos, pfence, flush);
 			clear_flags();
 		}
 	};
@@ -1307,7 +1327,8 @@ private:
 			VkImageTiling tiling,
 			VkImageUsageFlags usage,
 			VkImageCreateFlags image_flags)
-			: m_device(dev), current_layout(initial_layout)
+			: current_layout(initial_layout)
+			, m_device(dev)
 		{
 			info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
 			info.imageType = image_type;
@@ -1369,6 +1390,11 @@ private:
 		u32 mipmaps() const
 		{
 			return info.mipLevels;
+		}
+
+		u32 layers() const
+		{
+			return info.arrayLayers;
 		}
 
 		u8 samples() const
@@ -1433,14 +1459,16 @@ private:
 		}
 
 		image_view(VkDevice dev, VkImageViewCreateInfo create_info)
-			: m_device(dev), info(create_info)
+			: info(create_info)
+			, m_device(dev)
 		{
 			create_impl();
 		}
 
 		image_view(VkDevice dev, vk::image* resource,
-			const VkComponentMapping mapping = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A },
-			const VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1})
+			VkImageViewType view_type = VK_IMAGE_VIEW_TYPE_MAX_ENUM,
+			const VkComponentMapping& mapping = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A },
+			const VkImageSubresourceRange& range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1})
 			: m_device(dev), m_resource(resource)
 		{
 			info.format = resource->info.format;
@@ -1449,23 +1477,34 @@ private:
 			info.components = mapping;
 			info.subresourceRange = range;
 
-			switch (resource->info.imageType)
+			if (view_type == VK_IMAGE_VIEW_TYPE_MAX_ENUM)
 			{
-			case VK_IMAGE_TYPE_1D:
-				info.viewType = VK_IMAGE_VIEW_TYPE_1D;
-				break;
-			case VK_IMAGE_TYPE_2D:
-				if (resource->info.flags == VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT)
-					info.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
-				else
-					info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-				break;
-			case VK_IMAGE_TYPE_3D:
-				info.viewType = VK_IMAGE_VIEW_TYPE_3D;
-				break;
-			default:
-				ASSUME(0);
-				break;
+				switch (resource->info.imageType)
+				{
+				case VK_IMAGE_TYPE_1D:
+					info.viewType = VK_IMAGE_VIEW_TYPE_1D;
+					break;
+				case VK_IMAGE_TYPE_2D:
+					if (resource->info.flags == VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT)
+						info.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+					else if (resource->info.arrayLayers == 1)
+						info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+					else
+						info.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+					break;
+				case VK_IMAGE_TYPE_3D:
+					info.viewType = VK_IMAGE_VIEW_TYPE_3D;
+					break;
+				default:
+					ASSUME(0);
+					break;
+				}
+
+				info.subresourceRange.layerCount = resource->info.arrayLayers;
+			}
+			else
+			{
+				info.viewType = view_type;
 			}
 
 			create_impl();
@@ -1571,7 +1610,7 @@ private:
 			const auto range = vk::get_image_subresource_range(0, 0, info.arrayLayers, info.mipLevels, aspect() & mask);
 
 			verify(HERE), range.aspectMask;
-			auto view = std::make_unique<vk::image_view>(*get_current_renderer(), this, real_mapping, range);
+			auto view = std::make_unique<vk::image_view>(*get_current_renderer(), this, VK_IMAGE_VIEW_TYPE_MAX_ENUM, real_mapping, range);
 
 			auto result = view.get();
 			views.emplace(remap_encoding, std::move(view));
@@ -1698,6 +1737,86 @@ private:
 		VkDevice m_device;
 	};
 
+	class event
+	{
+		VkDevice m_device = VK_NULL_HANDLE;
+		VkEvent m_vk_event = VK_NULL_HANDLE;
+
+		std::unique_ptr<buffer> m_buffer;
+		volatile uint32_t* m_value = nullptr;
+
+	public:
+		event(const render_device& dev)
+		{
+			m_device = dev;
+			if (dev.gpu().get_driver_vendor() != driver_vendor::AMD)
+			{
+				VkEventCreateInfo info
+				{
+					.sType = VK_STRUCTURE_TYPE_EVENT_CREATE_INFO,
+					.pNext = nullptr,
+					.flags = 0
+				};
+				vkCreateEvent(dev, &info, nullptr, &m_vk_event);
+			}
+			else
+			{
+				// Work around AMD's broken event signals
+				m_buffer = std::make_unique<buffer>
+				(
+					dev,
+					4,
+					dev.get_memory_mapping().host_visible_coherent,
+					VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+					VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+					0
+				);
+
+				m_value = reinterpret_cast<uint32_t*>(m_buffer->map(0, 4));
+				*m_value = 0xCAFEBABE;
+			}
+		}
+
+		~event()
+		{
+			if (m_vk_event) [[likely]]
+			{
+				vkDestroyEvent(m_device, m_vk_event, nullptr);
+			}
+			else
+			{
+				m_buffer->unmap();
+				m_buffer.reset();
+				m_value = nullptr;
+			}
+		}
+
+		void signal(const command_buffer& cmd, VkPipelineStageFlags stages)
+		{
+			if (m_vk_event) [[likely]]
+			{
+				vkCmdSetEvent(cmd, m_vk_event, stages);
+			}
+			else
+			{
+				insert_execution_barrier(cmd, stages, VK_PIPELINE_STAGE_TRANSFER_BIT);
+				vkCmdFillBuffer(cmd, m_buffer->value, 0, 4, 0xDEADBEEF);
+			}
+		}
+
+		VkResult status() const
+		{
+			if (m_vk_event) [[likely]]
+			{
+				return vkGetEventStatus(m_device, m_vk_event);
+			}
+			else
+			{
+				return (*m_value == 0xDEADBEEF)? VK_EVENT_SET : VK_EVENT_RESET;
+			}
+		}
+	};
+
 	struct sampler
 	{
 		VkSampler value;
@@ -1766,7 +1885,8 @@ private:
 
 	public:
 		framebuffer(VkDevice dev, VkRenderPass pass, u32 width, u32 height, std::vector<std::unique_ptr<vk::image_view>> &&atts)
-			: m_device(dev), attachments(std::move(atts))
+			: attachments(std::move(atts))
+			, m_device(dev)
 		{
 			std::vector<VkImageView> image_view_array(attachments.size());
 			size_t i = 0;
@@ -1812,7 +1932,7 @@ private:
 			if (fbo_images.size() != attachments.size())
 				return false;
 
-			for (int n = 0; n < fbo_images.size(); ++n)
+			for (uint n = 0; n < fbo_images.size(); ++n)
 			{
 				if (attachments[n]->info.image != fbo_images[n]->value ||
 					attachments[n]->info.format != fbo_images[n]->info.format)
@@ -2019,7 +2139,7 @@ public:
 
 			if (m_width == 0 || m_height == 0)
 			{
-				LOG_ERROR(RSX, "Invalid window dimensions %d x %d", m_width, m_height);
+				rsx_log.error("Invalid window dimensions %d x %d", m_width, m_height);
 				return false;
 			}
 
@@ -2098,7 +2218,7 @@ public:
 
 			if (m_width == 0 || m_height == 0)
 			{
-				LOG_ERROR(RSX, "Invalid window dimensions %d x %d", m_width, m_height);
+				rsx_log.error("Invalid window dimensions %d x %d", m_width, m_height);
 				return false;
 			}
 
@@ -2158,7 +2278,7 @@ public:
 
 			if (m_width == 0 || m_height == 0)
 			{
-				LOG_ERROR(RSX, "Invalid window dimensions %d x %d", m_width, m_height);
+				rsx_log.error("Invalid window dimensions %d x %d", m_width, m_height);
 				return false;
 			}
 
@@ -2168,7 +2288,7 @@ public:
 			if (!XMatchVisualInfo(display, DefaultScreen(display), bit_depth, TrueColor, &visual))
 #pragma GCC diagnostic pop
 			{
-				LOG_ERROR(RSX, "Could not find matching visual info!" HERE);
+				rsx_log.error("Could not find matching visual info!" HERE);
 				return false;
 			}
 
@@ -2191,7 +2311,7 @@ public:
 
 			if (display == NULL)
 			{
-				LOG_FATAL(RSX, "Could not create virtual display on this window protocol (Wayland?)");
+				rsx_log.fatal("Could not create virtual display on this window protocol (Wayland?)");
 				return;
 			}
 
@@ -2397,7 +2517,7 @@ public:
 		{
 			if (vk_present_queue == VK_NULL_HANDLE)
 			{
-				LOG_ERROR(RSX, "Cannot create WSI swapchain without a present queue");
+				rsx_log.error("Cannot create WSI swapchain without a present queue");
 				return false;
 			}
 
@@ -2410,7 +2530,7 @@ public:
 			if (surface_descriptors.maxImageExtent.width < m_width ||
 				surface_descriptors.maxImageExtent.height < m_height)
 			{
-				LOG_ERROR(RSX, "Swapchain: Swapchain creation failed because dimensions cannot fit. Max = %d, %d, Requested = %d, %d",
+				rsx_log.error("Swapchain: Swapchain creation failed because dimensions cannot fit. Max = %d, %d, Requested = %d, %d",
 					surface_descriptors.maxImageExtent.width, surface_descriptors.maxImageExtent.height, m_width, m_height);
 
 				return false;
@@ -2426,7 +2546,7 @@ public:
 			{
 				if (surface_descriptors.currentExtent.width == 0 || surface_descriptors.currentExtent.height == 0)
 				{
-					LOG_WARNING(RSX, "Swapchain: Current surface extent is a null region. Is the window minimized?");
+					rsx_log.warning("Swapchain: Current surface extent is a null region. Is the window minimized?");
 					return false;
 				}
 
@@ -2472,7 +2592,7 @@ public:
 					break;
 			}
 
-			LOG_NOTICE(RSX, "Swapchain: present mode %d in use.", static_cast<int>(swapchain_present_mode));
+			rsx_log.notice("Swapchain: present mode %d in use.", static_cast<int>(swapchain_present_mode));
 
 			uint32_t nb_swap_images = surface_descriptors.minImageCount + 1;
 			if (surface_descriptors.maxImageCount > 0)
@@ -2680,7 +2800,7 @@ public:
 #endif //(WAYLAND)
 				if (!found_surface_ext)
 				{
-					LOG_ERROR(RSX, "Could not find a supported Vulkan surface extension");
+					rsx_log.error("Could not find a supported Vulkan surface extension");
 					return 0;
 				}
 #endif //(WIN32, __APPLE__)
@@ -2700,7 +2820,7 @@ public:
 			{
 				if (result == VK_ERROR_LAYER_NOT_PRESENT)
 				{
-					LOG_FATAL(RSX,"Could not initialize layer VK_LAYER_KHRONOS_validation");
+					rsx_log.fatal("Could not initialize layer VK_LAYER_KHRONOS_validation");
 				}
 
 				return false;
@@ -2828,7 +2948,7 @@ public:
 
 			if (!present_possible)
 			{
-				LOG_ERROR(RSX, "It is not possible for the currently selected GPU to present to the window (Likely caused by NVIDIA driver running the current display)");
+				rsx_log.error("It is not possible for the currently selected GPU to present to the window (Likely caused by NVIDIA driver running the current display)");
 			}
 
 			// Search for a graphics and a present queue in the array of queue
@@ -2869,7 +2989,7 @@ public:
 
 			if (graphicsQueueNodeIndex == UINT32_MAX)
 			{
-				LOG_FATAL(RSX, "Failed to find a suitable graphics queue" HERE);
+				rsx_log.fatal("Failed to find a suitable graphics queue" HERE);
 				return nullptr;
 			}
 
@@ -2882,7 +3002,7 @@ public:
 			if (!present_possible)
 			{
 				//Native(sw) swapchain
-				LOG_WARNING(RSX, "Falling back to software present support (native windowing API)");
+				rsx_log.warning("Falling back to software present support (native windowing API)");
 				auto swapchain = new swapchain_NATIVE(dev, UINT32_MAX, graphicsQueueNodeIndex);
 				swapchain->create(window_handle);
 				return swapchain;
@@ -3004,14 +3124,14 @@ public:
 		std::deque<u32> available_slots;
 		std::vector<query_slot_info> query_slot_status;
 
-		inline bool poke_query(query_slot_info& query, u32 index)
+		inline bool poke_query(query_slot_info& query, u32 index, VkQueryResultFlags flags)
 		{
 			// Query is ready if:
 			// 1. Any sample has been determined to have passed the Z test
 			// 2. The backend has fully processed the query and found no hits
 
 			u32 result[2] = { 0, 0 };
-			switch (const auto error = vkGetQueryPoolResults(*owner, query_pool, index, 1, 8, result, 8, VK_QUERY_RESULT_PARTIAL_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT))
+			switch (const auto error = vkGetQueryPoolResults(*owner, query_pool, index, 1, 8, result, 8, flags | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT))
 			{
 			case VK_SUCCESS:
 			{
@@ -3108,7 +3228,11 @@ public:
 
 		bool check_query_status(u32 index)
 		{
-			return poke_query(query_slot_status[index], index);
+			// NOTE: Keeps NVIDIA driver from using partial results as they are broken (always returns true)
+			const VkQueryResultFlags flags =
+				(vk::get_driver_vendor() == vk::driver_vendor::NVIDIA ? 0 : VK_QUERY_RESULT_PARTIAL_BIT);
+
+			return poke_query(query_slot_status[index], index, flags);
 		}
 
 		u32 get_query_result(u32 index)
@@ -3116,9 +3240,13 @@ public:
 			// Check for cached result
 			auto& query_info = query_slot_status[index];
 
+			// Wait for full result on NVIDIA to avoid getting garbage results
+			const VkQueryResultFlags flags =
+				(vk::get_driver_vendor() == vk::driver_vendor::NVIDIA ? VK_QUERY_RESULT_WAIT_BIT : VK_QUERY_RESULT_PARTIAL_BIT);
+
 			while (!query_info.ready)
 			{
-				poke_query(query_info, index);
+				poke_query(query_info, index, flags);
 			}
 
 			return query_info.any_passed ? 1 : 0;
@@ -3449,7 +3577,7 @@ public:
 					std::string shader_type = type == ::glsl::program_domain::glsl_vertex_program ? "vertex" :
 						type == ::glsl::program_domain::glsl_fragment_program ? "fragment" : "compute";
 
-					LOG_NOTICE(RSX, "%s", m_source);
+					rsx_log.notice("%s", m_source);
 					fmt::throw_exception("Failed to compile %s shader" HERE, shader_type);
 				}
 
@@ -3529,8 +3657,6 @@ public:
 			void bind_uniform(const VkBufferView &buffer_view, program_input_type type, const std::string &binding_name, VkDescriptorSet &descriptor_set);
 
 			void bind_buffer(const VkDescriptorBufferInfo &buffer_descriptor, uint32_t binding_point, VkDescriptorType type, VkDescriptorSet &descriptor_set);
-
-			u64 get_vertex_input_attributes_mask();
 		};
 	}
 
@@ -3568,7 +3694,7 @@ public:
 
 			if (!(get_heap_compatible_buffer_types() & usage))
 			{
-				LOG_WARNING(RSX, "Buffer usage %u is not heap-compatible using this driver, explicit staging buffer in use", usage);
+				rsx_log.warning("Buffer usage %u is not heap-compatible using this driver, explicit staging buffer in use", usage);
 
 				shadow = std::make_unique<buffer>(*device, size, memory_index, memory_flags, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, 0);
 				usage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;

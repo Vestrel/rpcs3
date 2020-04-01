@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #ifdef LLVM_AVAILABLE
 
@@ -16,6 +16,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Analysis/ConstantFolding.h"
+#include "llvm/IR/IntrinsicsX86.h"
 #ifdef _MSC_VER
 #pragma warning(pop)
 #else
@@ -27,7 +28,7 @@
 #include "Utilities/StrFmt.h"
 #include "Utilities/BEType.h"
 #include "Utilities/BitField.h"
-#include "Utilities/Log.h"
+#include "util/logs.hpp"
 #include "Utilities/JIT.h"
 
 #include <unordered_map>
@@ -2729,6 +2730,23 @@ public:
 		return result;
 	}
 
+	// TODO: Support doubles
+	auto fre(value_t<f32[4]> a)
+	{
+		decltype(a) result;
+		const auto av = a.eval(m_ir);
+		result.value  = m_ir->CreateCall(m_module->getOrInsertFunction("llvm.x86.sse.rcp.ps", av->getType(), av->getType()).getCallee(), {av});
+		return result;
+	}
+
+	auto frsqe(value_t<f32[4]> a)
+	{
+		decltype(a) result;
+		const auto av = a.eval(m_ir);
+		result.value  = m_ir->CreateCall(m_module->getOrInsertFunction("llvm.x86.sse.rsqrt.ps", av->getType(), av->getType()).getCallee(), {av});
+		return result;
+	}
+
 	template <typename T1, typename T2>
 	value_t<u8[16]> pshufb(T1 a, T2 b)
 	{
@@ -2823,5 +2841,9 @@ struct fmt_unveil<llvm::TypeSize, void>
 		return arg;
 	}
 };
+
+#ifndef _MSC_VER
+#pragma GCC diagnostic pop
+#endif
 
 #endif

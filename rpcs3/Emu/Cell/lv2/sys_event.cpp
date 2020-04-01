@@ -1,7 +1,6 @@
 ﻿#include "stdafx.h"
 #include "sys_event.h"
 
-#include "Emu/System.h"
 #include "Emu/IdManager.h"
 #include "Emu/IPC.h"
 
@@ -31,7 +30,7 @@ bool lv2_event_queue::send(lv2_event event)
 
 	if (sq.empty())
 	{
-		if (events.size() < this->size)
+		if (events.size() < this->size + 0u)
 		{
 			// Save event
 			events.emplace_back(event);
@@ -242,6 +241,11 @@ error_code sys_event_queue_receive(ppu_thread& ppu, u32 equeue_id, vm::ptr<sys_e
 
 	ppu.gpr[3] = CELL_OK;
 
+	// "/dev_flash/vsh/module/msmw2.sprx" seems to rely on some cryptic shared memory behaviour that we don't emulate correctly
+	// This is a hack to avoid waiting for 1m40s every time we boot vsh
+	if (timeout == 0x5f5e100)
+		timeout = 1;
+
 	const auto queue = idm::get<lv2_obj, lv2_event_queue>(equeue_id, [&](lv2_event_queue& queue) -> CellError
 	{
 		if (queue.type != SYS_PPU_QUEUE)
@@ -292,12 +296,17 @@ error_code sys_event_queue_receive(ppu_thread& ppu, u32 equeue_id, vm::ptr<sys_e
 		{
 			if (lv2_obj::wait_timeout(timeout, &ppu))
 			{
+				// Wait for rescheduling
+				if (ppu.check_state())
+				{
+					return 0;
+				}
+
 				std::lock_guard lock(queue->mutex);
 
 				if (!queue->unqueue(queue->sq, &ppu))
 				{
-					timeout = 0;
-					continue;
+					break;
 				}
 
 				ppu.gpr[3] = CELL_ETIMEDOUT;

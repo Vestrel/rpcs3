@@ -1,8 +1,11 @@
 ﻿#include "stdafx.h"
 #include "PadHandler.h"
+#include "Emu/System.h"
 #include "Input/pad_thread.h"
 
 cfg_input g_cfg_input;
+
+LOG_CHANNEL(input_log, "Input");
 
 PadHandlerBase::PadHandlerBase(pad_handler type) : m_type(type)
 {
@@ -26,7 +29,7 @@ int PadHandlerBase::FindKeyCode(const std::unordered_map<u32, std::string>& map,
 
 	if (fallback)
 	{
-		LOG_ERROR(HLE, "int FindKeyCode for [name = %s] returned with [def_code = %d] for [def = %s]", nam, def_code, def);
+		input_log.error("int FindKeyCode for [name = %s] returned with [def_code = %d] for [def = %s]", nam, def_code, def);
 		if (def_code < 0)
 			def_code = 0;
 	}
@@ -51,7 +54,7 @@ long PadHandlerBase::FindKeyCode(const std::unordered_map<u64, std::string>& map
 
 	if (fallback)
 	{
-		LOG_ERROR(HLE, "long FindKeyCode for [name = %s] returned with [def_code = %d] for [def = %s]", nam, def_code, def);
+		input_log.error("long FindKeyCode for [name = %s] returned with [def_code = %d] for [def = %s]", nam, def_code, def);
 		if (def_code < 0)
 			def_code = 0;
 	}
@@ -70,7 +73,7 @@ int PadHandlerBase::FindKeyCodeByString(const std::unordered_map<u32, std::strin
 
 	if (fallback)
 	{
-		LOG_ERROR(HLE, "long FindKeyCodeByString for [name = %s] returned with 0", name);
+		input_log.error("long FindKeyCodeByString for [name = %s] returned with 0", name);
 		return 0;
 	}
 
@@ -88,7 +91,7 @@ long PadHandlerBase::FindKeyCodeByString(const std::unordered_map<u64, std::stri
 
 	if (fallback)
 	{
-		LOG_ERROR(HLE, "long FindKeyCodeByString for [name = %s] returned with 0", name);
+		input_log.error("long FindKeyCodeByString for [name = %s] returned with 0", name);
 		return 0;
 	}
 
@@ -176,22 +179,24 @@ std::tuple<u16, u16> PadHandlerBase::NormalizeStickDeadzone(s32 inX, s32 inY, u3
 
 	if (dzRange > 0.f)
 	{
-		const float mag = std::min(sqrtf(X*X + Y*Y), 1.f);
+		const float mag = std::min(sqrtf(X * X + Y * Y), 1.f);
 
 		if (mag <= 0)
 		{
 			return std::tuple<u16, u16>(ConvertAxis(X), ConvertAxis(Y));
 		}
 
-		if (mag > dzRange) {
-			float pos = lerp(0.13f, 1.f, (mag - dzRange) / (1 - dzRange));
-			float scale = pos / mag;
+		if (mag > dzRange)
+		{
+			const float pos = std::lerp(0.13f, 1.f, (mag - dzRange) / (1 - dzRange));
+			const float scale = pos / mag;
 			X = X * scale;
 			Y = Y * scale;
 		}
-		else {
-			float pos = lerp(0.f, 0.13f, mag / dzRange);
-			float scale = pos / mag;
+		else
+		{
+			const float pos = std::lerp(0.f, 0.13f, mag / dzRange);
+			const float scale = pos / mag;
 			X = X * scale;
 			Y = Y * scale;
 		}
@@ -241,34 +246,39 @@ std::tuple<u16, u16> PadHandlerBase::ConvertToSquirclePoint(u16 inX, u16 inY, in
 	return std::tuple<u16, u16>(newX, newY);
 }
 
-std::string PadHandlerBase::name_string()
+std::string PadHandlerBase::name_string() const
 {
 	return m_name_string;
 }
 
-size_t PadHandlerBase::max_devices()
+size_t PadHandlerBase::max_devices() const
 {
 	return m_max_devices;
 }
 
-bool PadHandlerBase::has_config()
+bool PadHandlerBase::has_config() const
 {
 	return b_has_config;
 }
 
-bool PadHandlerBase::has_rumble()
+bool PadHandlerBase::has_rumble() const
 {
 	return b_has_rumble;
 }
 
-bool PadHandlerBase::has_deadzones()
+bool PadHandlerBase::has_deadzones() const
 {
 	return b_has_deadzones;
 }
 
-bool PadHandlerBase::has_led()
+bool PadHandlerBase::has_led() const
 {
 	return b_has_led;
+}
+
+bool PadHandlerBase::has_battery() const
+{
+	return b_has_battery;
 }
 
 std::string PadHandlerBase::get_config_dir(pad_handler type, const std::string& title_id)
@@ -297,7 +307,7 @@ void PadHandlerBase::init_configs()
 {
 	int index = 0;
 
-	for (int i = 0; i < MAX_GAMEPADS; i++)
+	for (u32 i = 0; i < MAX_GAMEPADS; i++)
 	{
 		if (g_cfg_input.player[i]->handler == m_type)
 		{
@@ -307,7 +317,7 @@ void PadHandlerBase::init_configs()
 	}
 }
 
-void PadHandlerBase::get_next_button_press(const std::string& pad_id, const std::function<void(u16, std::string, std::string, std::array<int, 6>)>& callback, const std::function<void(std::string)>& fail_callback, bool get_blacklist, const std::vector<std::string>& /*buttons*/)
+void PadHandlerBase::get_next_button_press(const std::string& pad_id, const pad_callback& callback, const pad_fail_callback& fail_callback, bool get_blacklist, const std::vector<std::string>& /*buttons*/)
 {
 	if (get_blacklist)
 		blacklist.clear();
@@ -329,8 +339,8 @@ void PadHandlerBase::get_next_button_press(const std::string& pad_id, const std:
 	std::pair<u16, std::string> pressed_button = { 0, "" };
 	for (const auto& button : button_list)
 	{
-		u32 keycode = button.first;
-		u16 value = data[keycode];
+		const u32 keycode = button.first;
+		const u16 value = data[keycode];
 
 		if (!get_blacklist && std::find(blacklist.begin(), blacklist.end(), keycode) != blacklist.end())
 			continue;
@@ -344,7 +354,7 @@ void PadHandlerBase::get_next_button_press(const std::string& pad_id, const std:
 			if (get_blacklist)
 			{
 				blacklist.emplace_back(keycode);
-				LOG_ERROR(HLE, "%s Calibration: Added key [ %d = %s ] to blacklist. Value = %d", m_type, keycode, button.second, value);
+				input_log.error("%s Calibration: Added key [ %d = %s ] to blacklist. Value = %d", m_type, keycode, button.second, value);
 			}
 			else if (value > pressed_button.first)
 				pressed_button = { value, button.second };
@@ -354,16 +364,17 @@ void PadHandlerBase::get_next_button_press(const std::string& pad_id, const std:
 	if (get_blacklist)
 	{
 		if (blacklist.empty())
-			LOG_SUCCESS(HLE, "%s Calibration: Blacklist is clear. No input spam detected", m_type);
+			input_log.success("%s Calibration: Blacklist is clear. No input spam detected", m_type);
 		return;
 	}
 
 	const auto preview_values = get_preview_values(data);
+	const auto battery_level = get_battery_level(pad_id);
 
 	if (pressed_button.first > 0)
-		return callback(pressed_button.first, pressed_button.second, pad_id, preview_values);
+		return callback(pressed_button.first, pressed_button.second, pad_id, battery_level, preview_values);
 	else
-		return callback(0, "", pad_id, preview_values);
+		return callback(0, "", pad_id, battery_level, preview_values);
 
 	return;
 }
@@ -442,8 +453,8 @@ bool PadHandlerBase::bindPadToDevice(std::shared_ptr<Pad> pad, const std::string
 	pad->m_buttons.emplace_back(CELL_PAD_BTN_OFFSET_DIGITAL1, mapping[button::r3], CELL_PAD_CTRL_R3);
 	pad->m_buttons.emplace_back(CELL_PAD_BTN_OFFSET_DIGITAL1, mapping[button::start], CELL_PAD_CTRL_START);
 	pad->m_buttons.emplace_back(CELL_PAD_BTN_OFFSET_DIGITAL1, mapping[button::select], CELL_PAD_CTRL_SELECT);
-	pad->m_buttons.emplace_back(CELL_PAD_BTN_OFFSET_DIGITAL2, mapping[button::ps], 0x100/*CELL_PAD_CTRL_PS*/);// TODO: PS button support
-	//pad->m_buttons.emplace_back(CELL_PAD_BTN_OFFSET_DIGITAL2, 0, 0x0); // Reserved (and currently not in use by rpcs3 at all)
+	pad->m_buttons.emplace_back(CELL_PAD_BTN_OFFSET_DIGITAL1, mapping[button::ps], CELL_PAD_CTRL_PS);
+	pad->m_buttons.emplace_back(CELL_PAD_BTN_OFFSET_DIGITAL2, 0, 0x0);
 
 	pad->m_sticks.emplace_back(CELL_PAD_BTN_OFFSET_ANALOG_LEFT_X, mapping[button::ls_left], mapping[button::ls_right]);
 	pad->m_sticks.emplace_back(CELL_PAD_BTN_OFFSET_ANALOG_LEFT_Y, mapping[button::ls_down], mapping[button::ls_up]);
@@ -586,7 +597,7 @@ void PadHandlerBase::ThreadProc()
 		{
 			if (!last_connection_status[i])
 			{
-				LOG_SUCCESS(HLE, "%s device %d connected", m_type, i);
+				input_log.success("%s device %d connected", m_type, i);
 				pad->m_port_status |= CELL_PAD_STATUS_CONNECTED;
 				pad->m_port_status |= CELL_PAD_STATUS_ASSIGN_CHANGES;
 				last_connection_status[i] = true;
@@ -602,7 +613,7 @@ void PadHandlerBase::ThreadProc()
 		{
 			if (last_connection_status[i])
 			{
-				LOG_ERROR(HLE, "%s device %d disconnected", m_type, i);
+				input_log.error("%s device %d disconnected", m_type, i);
 				pad->m_port_status &= ~CELL_PAD_STATUS_CONNECTED;
 				pad->m_port_status |= CELL_PAD_STATUS_ASSIGN_CHANGES;
 				last_connection_status[i] = false;

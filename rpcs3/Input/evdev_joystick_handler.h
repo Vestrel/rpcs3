@@ -1,8 +1,7 @@
 ﻿#pragma once
 #ifdef HAVE_LIBEVDEV
 
-#include "Utilities/types.h"
-#include "Utilities/Config.h"
+#include "stdafx.h"
 #include "Utilities/File.h"
 #include "Emu/Io/PadHandler.h"
 #include <libevdev/libevdev.h>
@@ -96,6 +95,12 @@ class evdev_joystick_handler final : public PadHandlerBase
 		{ BTN_7               , "7"           },
 		{ BTN_8               , "8"           },
 		{ BTN_9               , "9"           },
+		{ 0x10a               , "0x10a"       },
+		{ 0x10b               , "0x10b"       },
+		{ 0x10c               , "0x10c"       },
+		{ 0x10d               , "0x10d"       },
+		{ 0x10e               , "0x10e"       },
+		{ 0x10f               , "0x10f"       },
 		//{ BTN_MOUSE           , "Mouse"       }, same as BTN_LEFT
 		{ BTN_LEFT            , "Left"        },
 		{ BTN_RIGHT           , "Right"       },
@@ -105,6 +110,14 @@ class evdev_joystick_handler final : public PadHandlerBase
 		{ BTN_FORWARD         , "Forward"     },
 		{ BTN_BACK            , "Back"        },
 		{ BTN_TASK            , "Task"        },
+		{ 0x118               , "0x118"       },
+		{ 0x119               , "0x119"       },
+		{ 0x11a               , "0x11a"       },
+		{ 0x11b               , "0x11b"       },
+		{ 0x11c               , "0x11c"       },
+		{ 0x11d               , "0x11d"       },
+		{ 0x11e               , "0x11e"       },
+		{ 0x11f               , "0x11f"       },
 		{ BTN_JOYSTICK        , "Joystick"    },
 		{ BTN_TRIGGER         , "Trigger"     },
 		{ BTN_THUMB           , "Thumb"       },
@@ -118,6 +131,9 @@ class evdev_joystick_handler final : public PadHandlerBase
 		{ BTN_BASE4           , "Base 4"      },
 		{ BTN_BASE5           , "Base 5"      },
 		{ BTN_BASE6           , "Base 6"      },
+		{ 0x12c               , "0x12c"       },
+		{ 0x12d               , "0x12d"       },
+		{ 0x12e               , "0x12e"       },
 		{ BTN_DEAD            , "Dead"        },
 		//{ BTN_GAMEPAD         , "Gamepad"     }, same as BTN_A
 		//{ BTN_SOUTH           , "South"       }, same as BTN_A
@@ -139,6 +155,7 @@ class evdev_joystick_handler final : public PadHandlerBase
 		{ BTN_MODE            , "Mode"        },
 		{ BTN_THUMBL          , "Thumb L"     },
 		{ BTN_THUMBR          , "Thumb R"     },
+		{ 0x13f               , "0x13f"       },
 		//{ BTN_DIGI            , "Digi"        }, same as BTN_TOOL_PEN
 		{ BTN_TOOL_PEN        , "Pen"         },
 		{ BTN_TOOL_RUBBER     , "Rubber"      },
@@ -149,6 +166,7 @@ class evdev_joystick_handler final : public PadHandlerBase
 		{ BTN_TOOL_MOUSE      , "Mouse"       },
 		{ BTN_TOOL_LENS       , "Lense"       },
 		{ BTN_TOOL_QUINTTAP   , "Quinttap"    },
+		{ 0x149               , "0x149"       },
 		{ BTN_TOUCH           , "Touch"       },
 		{ BTN_STYLUS          , "Stylus"      },
 		{ BTN_STYLUS2         , "Stylus 2"    },
@@ -336,8 +354,8 @@ public:
 	std::vector<std::string> ListDevices() override;
 	bool bindPadToDevice(std::shared_ptr<Pad> pad, const std::string& device) override;
 	void Close();
-	void get_next_button_press(const std::string& padId, const std::function<void(u16, std::string, std::string, std::array<int, 6>)>& callback, const std::function<void(std::string)>& fail_callback, bool get_blacklist = false, const std::vector<std::string>& buttons = {}) override;
-	void SetPadData(const std::string& padId, u32 largeMotor, u32 smallMotor, s32 r, s32 g, s32 b) override;
+	void get_next_button_press(const std::string& padId, const pad_callback& callback, const pad_fail_callback& fail_callback, bool get_blacklist = false, const std::vector<std::string>& buttons = {}) override;
+	void SetPadData(const std::string& padId, u32 largeMotor, u32 smallMotor, s32 r, s32 g, s32 b, bool battery_led, u32 battery_led_brightness) override;
 
 private:
 	std::shared_ptr<EvdevDevice> get_evdev_device(const std::string& device);

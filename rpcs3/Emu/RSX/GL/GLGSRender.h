@@ -33,27 +33,36 @@ namespace gl
 		u32 volatile_mapping_offset;
 		std::optional<std::tuple<GLenum, u32> > index_info;
 	};
-}
 
-struct work_item
-{
-	u32  address_to_flush = 0;
-	gl::texture_cache::thrashed_set section_data;
-
-	volatile bool processed = false;
-	volatile bool result = false;
-	volatile bool received = false;
-
-	void producer_wait()
+	struct work_item
 	{
-		while (!processed)
-		{
-			std::this_thread::yield();
-		}
+		u32  address_to_flush = 0;
+		gl::texture_cache::thrashed_set section_data;
 
-		received = true;
-	}
-};
+		volatile bool processed = false;
+		volatile bool result = false;
+		volatile bool received = false;
+
+		void producer_wait()
+		{
+			while (!processed)
+			{
+				std::this_thread::yield();
+			}
+
+			received = true;
+		}
+	};
+
+	struct present_surface_info
+	{
+		u32 address;
+		u32 format;
+		u32 width;
+		u32 height;
+		u32 pitch;
+	};
+}
 
 class GLGSRender : public GSRender, public ::rsx::reports::ZCULL_control
 {
@@ -66,6 +75,7 @@ private:
 	gl::sampler_state m_vs_sampler_states[rsx::limits::vertex_textures_count];           // Vertex textures
 
 	gl::glsl::program *m_program;
+	gl::glsl::program m_shader_interpreter;
 
 	gl_render_targets m_rtts;
 
@@ -103,7 +113,7 @@ private:
 	gl::video_out_calibration_pass m_video_output_pass;
 
 	shared_mutex queue_guard;
-	std::list<work_item> work_queue;
+	std::list<gl::work_item> work_queue;
 
 	GLProgramBuffer m_prog_buffer;
 	draw_context_t m_decompiler_context;
@@ -145,12 +155,16 @@ private:
 
 	void update_draw_state();
 
+	void load_texture_env();
+	void bind_texture_env();
+
+	gl::texture* get_present_source(gl::present_surface_info* info, const rsx::avconf* avconfig);
+
 public:
-	void read_buffers();
 	void set_viewport();
 	void set_scissor(bool clip_viewport);
 
-	work_item& post_flush_request(u32 address, gl::texture_cache::thrashed_set& flush_data);
+	gl::work_item& post_flush_request(u32 address, gl::texture_cache::thrashed_set& flush_data);
 
 	bool scaled_image_from_memory(rsx::blit_src_info& src_info, rsx::blit_dst_info& dst_info, bool interpolate) override;
 
@@ -164,6 +178,7 @@ protected:
 	void clear_surface(u32 arg) override;
 	void begin() override;
 	void end() override;
+	void emit_geometry(u32 sub_index) override;
 
 	void on_init_thread() override;
 	void on_exit() override;

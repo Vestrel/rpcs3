@@ -1,11 +1,9 @@
-#include "stdafx.h"
+﻿#include "stdafx.h"
 #include "cellCamera.h"
 
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/Cell/lv2/sys_event.h"
 #include "Emu/IdManager.h"
-#include "Emu/Io/PadHandler.h"
-#include "Emu/System.h"
 
 LOG_CHANNEL(cellCamera);
 
@@ -273,7 +271,6 @@ static error_code check_camera_info(const CellCameraInfoEx& info)
 
 std::pair<u32, u32> get_video_resolution(const CellCameraInfoEx& info)
 {
-	std::pair<u32, u32> res;
 	switch (info.resolution)
 	{
 	case CELL_CAMERA_VGA: return{ 640, 480 };
@@ -1335,8 +1332,7 @@ void camera_context::operator()()
 						data3 = 0;	// unused
 					}
 
-					const auto send_status = queue->send(evt_data.source, CELL_CAMERA_FRAME_UPDATE, data2, data3);
-					if (LIKELY(send_status))
+					if (queue->send(evt_data.source, CELL_CAMERA_FRAME_UPDATE, data2, data3)) [[likely]]
 					{
 						++frame_num;
 					}
@@ -1383,8 +1379,7 @@ void camera_context::send_attach_state(bool attached)
 
 			if (auto queue = lv2_event_queue::find(key))
 			{
-				const auto send_result = queue->send(evt_data.source, attached ? CELL_CAMERA_ATTACH : CELL_CAMERA_DETACH, 0, 0);
-				if (LIKELY(send_result))
+				if (queue->send(evt_data.source, attached ? CELL_CAMERA_ATTACH : CELL_CAMERA_DETACH, 0, 0)) [[likely]]
 				{
 					is_attached = attached;
 				}
@@ -1404,7 +1399,7 @@ void camera_context::set_attr(s32 attrib, u32 arg1, u32 arg2)
 	{
 		if (arg1 != CELL_CAMERA_READ_FUNCCALL && arg1 != CELL_CAMERA_READ_DIRECT)
 		{
-			LOG_WARNING(HLE, "Unknown read mode set: %d", arg1);
+			cellCamera.warning("Unknown read mode set: %d", arg1);
 			arg1 = CELL_CAMERA_READ_FUNCCALL;
 		}
 		read_mode.exchange(arg1);

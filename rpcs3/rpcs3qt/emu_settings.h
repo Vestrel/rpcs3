@@ -1,14 +1,12 @@
 ﻿#pragma once
 
-#include "Utilities/File.h"
-#include "Utilities/Log.h"
-
 #include "yaml-cpp/yaml.h"
+
+#include "stdafx.h"
 
 #include <QCheckBox>
 #include <QStringList>
 #include <QMap>
-#include <QObject>
 #include <QComboBox>
 #include <QSpinBox>
 
@@ -41,11 +39,13 @@ public:
 		EnableTSX,
 		AccurateGETLLAR,
 		AccuratePUTLLUC,
+		AccurateRSXAccess,
 		AccurateXFloat,
 		SetDAZandFTZ,
 		SPUBlockSize,
 		SPUCache,
 		DebugConsoleMode,
+		SilenceAllLogs,
 		MaxSPURSThreads,
 		SleepTimersAccuracy,
 		ClocksScale,
@@ -84,6 +84,7 @@ public:
 		MultithreadedRSX,
 		VBlankRate,
 		RelaxedZCULL,
+		DriverWakeUpDelay,
 
 		// Performance Overlay
 		PerfOverlayEnabled,
@@ -130,14 +131,18 @@ public:
 		StartOnBoot,
 		StartGameFullscreen,
 		PreventDisplaySleep,
-		ShowFPSInTitle,
 		ShowTrophyPopups,
 		ShowWelcomeScreen,
 		UseNativeInterface,
 		ShowShaderCompilationHint,
+		WindowTitleFormat,
 
 		// Network
-		ConnectionStatus,
+		InternetStatus,
+		DNSAddress,
+		IpSwapList,
+		PSNStatus,
+		PSNNPID,
 
 		// System
 		Language,
@@ -163,11 +168,19 @@ public:
 		SettingsType type = VulkanAdapter;
 		bool supported = true;
 		bool has_adapters = true;
+		bool has_msaa = false;
 
-		Render_Info() {}
-		Render_Info(const QString& name) : name(name), has_adapters(false) {}
-		Render_Info(const QString& name, const QStringList& adapters, bool supported, SettingsType type)
-			: name(name), adapters(adapters), supported(supported), type(type) {}
+		Render_Info() = default;
+		explicit Render_Info(QString name)
+			: name(std::move(name))
+			, has_adapters(false) {}
+
+		Render_Info(QString name, QStringList adapters, bool supported, SettingsType type, bool has_msaa)
+			: name(std::move(name))
+			, adapters(std::move(adapters))
+			, type(type)
+			, supported(supported)
+			, has_msaa(has_msaa) {}
 	};
 
 	struct Render_Creator
@@ -218,6 +231,9 @@ public:
 
 	/** Connects a double spin box with the target settings type*/
 	void EnhanceDoubleSpinBox(QDoubleSpinBox* slider, SettingsType type, const QString& prefix = "", const QString& suffix = "");
+
+	/** Connects a line edit with the target settings type*/
+	void EnhanceEdit(QLineEdit* edit, SettingsType type);
 
 	std::vector<std::string> GetLoadedLibraries();
 	void SaveSelectedLibraries(const std::vector<std::string>& libs);
@@ -271,6 +287,7 @@ private:
 		{ EnableTSX,                { "Core", "Enable TSX"}},
 		{ AccurateGETLLAR,          { "Core", "Accurate GETLLAR"}},
 		{ AccuratePUTLLUC,          { "Core", "Accurate PUTLLUC"}},
+		{ AccurateRSXAccess,        { "Core", "Accurate RSX reservation access"}},
 		{ AccurateXFloat,           { "Core", "Accurate xfloat"}},
 		{ SetDAZandFTZ,             { "Core", "Set DAZ and FTZ"}},
 		{ SPUBlockSize,             { "Core", "SPU Block Size"}},
@@ -314,6 +331,7 @@ private:
 		{ MinimumScalableDimension,   { "Video", "Minimum Scalable Dimension"}},
 		{ VulkanAdapter,              { "Video", "Vulkan", "Adapter"}},
 		{ VBlankRate,                 { "Video", "Vblank Rate"}},
+		{ DriverWakeUpDelay,          { "Video", "Driver Wake-Up Delay"}},
 
 		// Performance Overlay
 		{ PerfOverlayEnabled,               { "Video", "Performance Overlay", "Enabled" } },
@@ -360,14 +378,19 @@ private:
 		{ StartOnBoot,               { "Miscellaneous", "Automatically start games after boot" }},
 		{ StartGameFullscreen,       { "Miscellaneous", "Start games in fullscreen mode"}},
 		{ PreventDisplaySleep,       { "Miscellaneous", "Prevent display sleep while running games"}},
-		{ ShowFPSInTitle,            { "Miscellaneous", "Show FPS counter in window title"}},
 		{ ShowTrophyPopups,          { "Miscellaneous", "Show trophy popups"}},
 		{ ShowWelcomeScreen,         { "Miscellaneous", "Show Welcome Screen"}},
 		{ UseNativeInterface,        { "Miscellaneous", "Use native user interface"}},
 		{ ShowShaderCompilationHint, { "Miscellaneous", "Show shader compilation hint"}},
+		{ SilenceAllLogs,            { "Miscellaneous", "Silence All Logs" }},
+		{ WindowTitleFormat,         { "Miscellaneous", "Window Title Format" }},
 
 		// Networking
-		{ ConnectionStatus, { "Net", "Connection status"}},
+		{ InternetStatus, { "Net", "Internet enabled"}},
+		{ DNSAddress,     { "Net", "DNS address"}},
+		{ IpSwapList,     { "Net", "IP swap list"}},
+		{ PSNStatus,      { "Net", "PSN status"}},
+		{ PSNNPID,        { "Net", "NPID"}},
 
 		// System
 		{ Language,              { "System", "Language"}},

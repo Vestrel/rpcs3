@@ -1,10 +1,15 @@
-#include "stdafx.h"
+﻿#include "stdafx.h"
 #include "Config.h"
+#include "Utilities/types.h"
 
-#include "yaml-cpp/yaml.h"
+#include "util/yaml.hpp"
 
 #include <typeinfo>
 #include <charconv>
+
+[[noreturn]] void report_fatal_error(const std::string&);
+
+LOG_CHANNEL(cfg_log, "CFG");
 
 namespace cfg
 {
@@ -13,7 +18,7 @@ namespace cfg
 	{
 		if (_type != type::node)
 		{
-			fmt::throw_exception("Invalid root node" HERE);
+			cfg_log.fatal("Invalid root node" HERE);
 		}
 	}
 
@@ -24,7 +29,7 @@ namespace cfg
 		{
 			if (pair.first == name)
 			{
-				fmt::throw_exception("Node already exists: %s" HERE, name);
+				cfg_log.fatal("Node already exists: %s" HERE, name);
 			}
 		}
 
@@ -33,12 +38,12 @@ namespace cfg
 
 	bool _base::from_string(const std::string&, bool)
 	{
-		fmt::throw_exception("from_string() purecall" HERE);
+		report_fatal_error("from_string() purecall" HERE);
 	}
 
 	bool _base::from_list(std::vector<std::string>&&)
 	{
-		fmt::throw_exception("from_list() purecall" HERE);
+		report_fatal_error("from_list() purecall" HERE);
 	}
 
 	// Emit YAML
@@ -72,13 +77,13 @@ bool cfg::try_to_int64(s64* out, const std::string& value, s64 min, s64 max)
 
 	if (ret.ec != std::errc() || ret.ptr != end)
 	{
-		if (out) LOG_ERROR(GENERAL, "cfg::try_to_int('%s'): invalid integer", value);
+		if (out) cfg_log.error("cfg::try_to_int('%s'): invalid integer", value);
 		return false;
 	}
 
 	if (result < min || result > max)
 	{
-		if (out) LOG_ERROR(GENERAL, "cfg::try_to_int('%s'): out of bounds (%lld..%lld)", value, min, max);
+		if (out) cfg_log.error("cfg::try_to_int('%s'): out of bounds (%lld..%lld)", value, min, max);
 		return false;
 	}
 
@@ -127,13 +132,13 @@ bool cfg::try_to_enum_value(u64* out, decltype(&fmt_class_string<int>::format) f
 
 	if (ret.ec != std::errc() || ret.ptr != end)
 	{
-		if (out) LOG_ERROR(GENERAL, "cfg::try_to_enum_value('%s'): invalid enum or integer", value);
+		if (out) cfg_log.error("cfg::try_to_enum_value('%s'): invalid enum or integer", value);
 		return false;
 	}
 
 	if (result > max)
 	{
-		if (out) LOG_ERROR(GENERAL, "cfg::try_to_enum_value('%s'): out of bounds(0..%u)", value, max);
+		if (out) cfg_log.error("cfg::try_to_enum_value('%s'): out of bounds(0..%u)", value, max);
 		return false;
 	}
 
@@ -300,14 +305,17 @@ std::string cfg::node::to_string() const
 	return {out.c_str(), out.size()};
 }
 
-bool cfg::node::from_string(const std::string& value, bool dynamic) try
+bool cfg::node::from_string(const std::string& value, bool dynamic)
 {
-	cfg::decode(YAML::Load(value), *this, dynamic);
-	return true;
-}
-catch (const std::exception& e)
-{
-	LOG_FATAL(GENERAL, "%s thrown: %s", typeid(e).name(), e.what());
+	auto [result, error] = yaml_load(value);
+
+	if (error.empty())
+	{
+		cfg::decode(result, *this, dynamic);
+		return true;
+	}
+
+	cfg_log.fatal("Failed to load node: %s", error);
 	return false;
 }
 
@@ -326,7 +334,7 @@ void cfg::_bool::from_default()
 
 void cfg::string::from_default()
 {
-	m_value = def;
+	m_value = m_value.make(def);
 }
 
 void cfg::set_entry::from_default()

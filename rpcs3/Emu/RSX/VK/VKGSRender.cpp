@@ -1,11 +1,7 @@
 ﻿#include "stdafx.h"
-#include "Emu/Memory/vm.h"
-#include "Emu/System.h"
+#include "../Overlays/overlay_shader_compile_notification.h"
+#include "../Overlays/Shaders/shader_loading_dialog_native.h"
 #include "VKGSRender.h"
-#include "../rsx_methods.h"
-#include "../rsx_utils.h"
-#include "../Common/BufferUtils.h"
-#include "VKFormats.h"
 #include "VKCommonDecompiler.h"
 #include "VKRenderPass.h"
 #include "VKResourceManager.h"
@@ -42,22 +38,7 @@ namespace
 
 namespace vk
 {
-	VkCompareOp get_compare_func(rsx::comparison_function op, bool reverse_direction = false)
-	{
-		switch (op)
-		{
-		case rsx::comparison_function::never: return VK_COMPARE_OP_NEVER;
-		case rsx::comparison_function::greater: return reverse_direction ? VK_COMPARE_OP_LESS: VK_COMPARE_OP_GREATER;
-		case rsx::comparison_function::less: return reverse_direction ? VK_COMPARE_OP_GREATER: VK_COMPARE_OP_LESS;
-		case rsx::comparison_function::less_or_equal: return reverse_direction ? VK_COMPARE_OP_GREATER_OR_EQUAL: VK_COMPARE_OP_LESS_OR_EQUAL;
-		case rsx::comparison_function::greater_or_equal: return reverse_direction ? VK_COMPARE_OP_LESS_OR_EQUAL: VK_COMPARE_OP_GREATER_OR_EQUAL;
-		case rsx::comparison_function::equal: return VK_COMPARE_OP_EQUAL;
-		case rsx::comparison_function::not_equal: return VK_COMPARE_OP_NOT_EQUAL;
-		case rsx::comparison_function::always: return VK_COMPARE_OP_ALWAYS;
-		default:
-			fmt::throw_exception("Unknown compare op: 0x%x" HERE, static_cast<u32>(op));
-		}
-	}
+	VkCompareOp get_compare_func(rsx::comparison_function op, bool reverse_direction = false);
 
 	std::pair<VkFormat, VkComponentMapping> get_compatible_surface_format(rsx::surface_color_format color_format)
 	{
@@ -104,21 +85,24 @@ namespace vk
 
 		case rsx::surface_color_format::b8:
 		{
-			VkComponentMapping no_alpha = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ONE };
+			const VkComponentMapping no_alpha = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ONE };
 			return std::make_pair(VK_FORMAT_R8_UNORM, no_alpha);
 		}
 
 		case rsx::surface_color_format::g8b8:
 		{
-			VkComponentMapping gb_rg = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G };
+			const VkComponentMapping gb_rg = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G };
 			return std::make_pair(VK_FORMAT_R8G8_UNORM, gb_rg);
 		}
 
 		case rsx::surface_color_format::x32:
-			return std::make_pair(VK_FORMAT_R32_SFLOAT, vk::default_component_map());
+		{
+			const VkComponentMapping rrrr = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R };
+			return std::make_pair(VK_FORMAT_R32_SFLOAT, rrrr);
+		}
 
 		default:
-			LOG_ERROR(RSX, "Surface color buffer: Unsupported surface color format (0x%x)", static_cast<u32>(color_format));
+			rsx_log.error("Surface color buffer: Unsupported surface color format (0x%x)", static_cast<u32>(color_format));
 			return std::make_pair(VK_FORMAT_B8G8R8A8_UNORM, vk::default_component_map());
 		}
 	}
@@ -177,12 +161,12 @@ namespace vk
 		switch (op)
 		{
 		case rsx::blend_equation::add_signed:
-			LOG_TRACE(RSX, "blend equation add_signed used. Emulating using FUNC_ADD");
+			rsx_log.trace("blend equation add_signed used. Emulating using FUNC_ADD");
 		case rsx::blend_equation::add:
 			return VK_BLEND_OP_ADD;
 		case rsx::blend_equation::substract: return VK_BLEND_OP_SUBTRACT;
 		case rsx::blend_equation::reverse_substract_signed:
-			LOG_TRACE(RSX, "blend equation reverse_subtract_signed used. Emulating using FUNC_REVERSE_SUBTRACT");
+			rsx_log.trace("blend equation reverse_subtract_signed used. Emulating using FUNC_REVERSE_SUBTRACT");
 		case rsx::blend_equation::reverse_substract: return VK_BLEND_OP_REVERSE_SUBTRACT;
 		case rsx::blend_equation::min: return VK_BLEND_OP_MIN;
 		case rsx::blend_equation::max: return VK_BLEND_OP_MAX;
@@ -190,7 +174,6 @@ namespace vk
 			fmt::throw_exception("Unknown blend op: 0x%x" HERE, static_cast<u32>(op));
 		}
 	}
-
 
 	VkStencilOp get_stencil_op(rsx::stencil_op op)
 	{
@@ -237,7 +220,8 @@ namespace
 {
 	std::tuple<VkPipelineLayout, VkDescriptorSetLayout> get_shared_pipeline_layout(VkDevice dev)
 	{
-		std::array<VkDescriptorSetLayoutBinding, VK_NUM_DESCRIPTOR_BINDINGS> bindings = {};
+		const auto& binding_table = vk::get_current_renderer()->get_pipeline_binding_table();
+		std::vector<VkDescriptorSetLayoutBinding> bindings(binding_table.total_descriptor_bindings);
 
 		size_t idx = 0;
 
@@ -247,58 +231,60 @@ namespace
 			bindings[idx].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
 			bindings[idx].descriptorCount = 1;
 			bindings[idx].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-			bindings[idx].binding = VERTEX_BUFFERS_FIRST_BIND_SLOT + i;
+			bindings[idx].binding = binding_table.vertex_buffers_first_bind_slot + i;
 			idx++;
 		}
 
 		bindings[idx].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 		bindings[idx].descriptorCount = 1;
 		bindings[idx].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-		bindings[idx].binding = FRAGMENT_CONSTANT_BUFFERS_BIND_SLOT;
+		bindings[idx].binding = binding_table.fragment_constant_buffers_bind_slot;
 
 		idx++;
 
 		bindings[idx].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 		bindings[idx].descriptorCount = 1;
 		bindings[idx].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-		bindings[idx].binding = FRAGMENT_STATE_BIND_SLOT;
+		bindings[idx].binding = binding_table.fragment_state_bind_slot;
 
 		idx++;
 
 		bindings[idx].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 		bindings[idx].descriptorCount = 1;
 		bindings[idx].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-		bindings[idx].binding = FRAGMENT_TEXTURE_PARAMS_BIND_SLOT;
+		bindings[idx].binding = binding_table.fragment_texture_params_bind_slot;
 
 		idx++;
 
 		bindings[idx].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 		bindings[idx].descriptorCount = 1;
 		bindings[idx].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-		bindings[idx].binding = VERTEX_CONSTANT_BUFFERS_BIND_SLOT;
+		bindings[idx].binding = binding_table.vertex_constant_buffers_bind_slot;
 
 		idx++;
 
 		bindings[idx].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 		bindings[idx].descriptorCount = 1;
 		bindings[idx].stageFlags = VK_SHADER_STAGE_ALL_GRAPHICS;
-		bindings[idx].binding = VERTEX_PARAMS_BIND_SLOT;
+		bindings[idx].binding = binding_table.vertex_params_bind_slot;
 
 		idx++;
 
 		bindings[idx].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 		bindings[idx].descriptorCount = 1;
 		bindings[idx].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-		bindings[idx].binding = CONDITIONAL_RENDER_PREDICATE_SLOT;
+		bindings[idx].binding = binding_table.conditional_render_predicate_slot;
 
 		idx++;
 
-		for (int i = 0; i < rsx::limits::fragment_textures_count; i++)
+		for (auto binding = binding_table.textures_first_bind_slot;
+			 binding < binding_table.vertex_textures_first_bind_slot;
+			 binding++)
 		{
 			bindings[idx].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 			bindings[idx].descriptorCount = 1;
 			bindings[idx].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-			bindings[idx].binding = TEXTURES_FIRST_BIND_SLOT + i;
+			bindings[idx].binding = binding;
 			idx++;
 		}
 
@@ -307,11 +293,11 @@ namespace
 			bindings[idx].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 			bindings[idx].descriptorCount = 1;
 			bindings[idx].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-			bindings[idx].binding = VERTEX_TEXTURES_FIRST_BIND_SLOT + i;
+			bindings[idx].binding = binding_table.vertex_textures_first_bind_slot + i;
 			idx++;
 		}
 
-		verify(HERE), idx == VK_NUM_DESCRIPTOR_BINDINGS;
+		verify(HERE), idx == binding_table.total_descriptor_bindings;
 
 		std::array<VkPushConstantRange, 1> push_constants;
 		push_constants[0].offset = 0;
@@ -358,7 +344,7 @@ VKGSRender::VKGSRender() : GSRender()
 	}
 	else
 	{
-		LOG_FATAL(RSX, "Could not find a vulkan compatible GPU driver. Your GPU(s) may not support Vulkan, or you need to install the vulkan runtime and drivers");
+		rsx_log.fatal("Could not find a vulkan compatible GPU driver. Your GPU(s) may not support Vulkan, or you need to install the vulkan runtime and drivers");
 		m_device = VK_NULL_HANDLE;
 		return;
 	}
@@ -370,7 +356,7 @@ VKGSRender::VKGSRender() : GSRender()
 	if (gpus.empty())
 	{
 		//We can't throw in Emulator::Load, so we show error and return
-		LOG_FATAL(RSX, "No compatible GPU devices found");
+		rsx_log.fatal("No compatible GPU devices found");
 		m_device = VK_NULL_HANDLE;
 		return;
 	}
@@ -408,7 +394,7 @@ VKGSRender::VKGSRender() : GSRender()
 	if (!m_swapchain)
 	{
 		m_device = VK_NULL_HANDLE;
-		LOG_FATAL(RSX, "Could not successfully initialize a swapchain");
+		rsx_log.fatal("Could not successfully initialize a swapchain");
 		return;
 	}
 
@@ -452,10 +438,13 @@ VKGSRender::VKGSRender() : GSRender()
 		m_occlusion_query_data[n].driver_handle = n;
 
 	//Generate frame contexts
+	const auto& binding_table = m_device->get_pipeline_binding_table();
+	const u32 num_fs_samplers = binding_table.vertex_textures_first_bind_slot - binding_table.textures_first_bind_slot;
+
 	std::vector<VkDescriptorPoolSize> sizes;
 	sizes.push_back({ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER , 6 * DESCRIPTOR_MAX_DRAW_CALLS });
 	sizes.push_back({ VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER , 3 * DESCRIPTOR_MAX_DRAW_CALLS });
-	sizes.push_back({ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER , 20 * DESCRIPTOR_MAX_DRAW_CALLS });
+	sizes.push_back({ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER , (num_fs_samplers + 4) * DESCRIPTOR_MAX_DRAW_CALLS });
 
 	// Conditional rendering predicate slot; refactor to allow skipping this when not needed
 	sizes.push_back({ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 * DESCRIPTOR_MAX_DRAW_CALLS });
@@ -480,7 +469,7 @@ VKGSRender::VKGSRender() : GSRender()
 	if (m_texbuffer_view_size < 0x800000)
 	{
 		// Warn, only possibly expected on macOS
-		LOG_WARNING(RSX, "Current driver may crash due to memory limitations (%uk)", m_texbuffer_view_size / 1024);
+		rsx_log.warning("Current driver may crash due to memory limitations (%uk)", m_texbuffer_view_size / 1024);
 	}
 
 	for (auto &ctx : frame_context_storage)
@@ -512,7 +501,14 @@ VKGSRender::VKGSRender() : GSRender()
 	m_video_output_pass = std::make_unique<vk::video_out_calibration_pass>();
 	m_video_output_pass->create(*m_device);
 
-	m_prog_buffer = std::make_unique<VKProgramBuffer>();
+	m_prog_buffer = std::make_unique<VKProgramBuffer>
+	(
+		[this](const vk::pipeline_props& props, const RSXVertexProgram& vp, const RSXFragmentProgram& fp)
+		{
+			// Program was linked or queued for linking
+			m_shaders_cache->store(props, vp, fp);
+		}
+	);
 
 	if (g_cfg.video.disable_vertex_cache || g_cfg.video.multithreaded_rsx)
 		m_vertex_cache = std::make_unique<vk::null_vertex_cache>();
@@ -699,15 +695,15 @@ bool VKGSRender::on_access_violation(u32 address, bool is_writing)
 
 	if (result.num_flushable > 0)
 	{
-		if (rsx::g_dma_manager.is_current_thread())
+		if (g_fxo->get<rsx::dma_manager>()->is_current_thread())
 		{
 			// The offloader thread cannot handle flush requests
-			verify(HERE), m_queue_status.load() == flush_queue_state::ok;
+			verify(HERE), !(m_queue_status & flush_queue_state::deadlock);
 
-			m_offloader_fault_range = rsx::g_dma_manager.get_fault_range(is_writing);
+			m_offloader_fault_range = g_fxo->get<rsx::dma_manager>()->get_fault_range(is_writing);
 			m_offloader_fault_cause = (is_writing) ? rsx::invalidation_cause::write : rsx::invalidation_cause::read;
 
-			rsx::g_dma_manager.set_mem_fault_flag();
+			g_fxo->get<rsx::dma_manager>()->set_mem_fault_flag();
 			m_queue_status |= flush_queue_state::deadlock;
 
 			// Wait for deadlock to clear
@@ -716,7 +712,7 @@ bool VKGSRender::on_access_violation(u32 address, bool is_writing)
 				_mm_pause();
 			}
 
-			rsx::g_dma_manager.clear_mem_fault_flag();
+			g_fxo->get<rsx::dma_manager>()->clear_mem_fault_flag();
 			return true;
 		}
 
@@ -735,7 +731,7 @@ bool VKGSRender::on_access_violation(u32 address, bool is_writing)
 		{
 			if (vk::is_uninterruptible())
 			{
-				LOG_ERROR(RSX, "Fault in uninterruptible code!");
+				rsx_log.error("Fault in uninterruptible code!");
 			}
 
 			//Flush primary cb queue to sync pending changes (e.g image transitions!)
@@ -790,9 +786,12 @@ void VKGSRender::on_semaphore_acquire_wait()
 void VKGSRender::notify_tile_unbound(u32 tile)
 {
 	//TODO: Handle texture writeback
-	//u32 addr = rsx::get_address(tiles[tile].offset, tiles[tile].location);
-	//on_notify_memory_unmapped(addr, tiles[tile].size);
-	//m_rtts.invalidate_surface_address(addr, false);
+	if (false)
+	{
+		u32 addr = rsx::get_address(tiles[tile].offset, tiles[tile].location, HERE);
+		on_notify_memory_unmapped(addr, tiles[tile].size);
+		m_rtts.invalidate_surface_address(addr, false);
+	}
 
 	{
 		std::lock_guard lock(m_sampler_mutex);
@@ -866,7 +865,7 @@ void VKGSRender::check_heap_status(u32 flags)
 	{
 		m_profiler.start();
 
-		frame_context_t *target_frame = nullptr;
+		vk::frame_context_t *target_frame = nullptr;
 		if (!m_queued_frames.empty())
 		{
 			if (m_current_frame != &m_aux_frame_context)
@@ -951,884 +950,6 @@ VkDescriptorSet VKGSRender::allocate_descriptor_set()
 	return new_descriptor_set;
 }
 
-void VKGSRender::begin()
-{
-	rsx::thread::begin();
-
-	if (skip_current_frame || swapchain_unavailable || cond_render_ctrl.disable_rendering())
-		return;
-
-	init_buffers(rsx::framebuffer_creation_context::context_draw);
-}
-
-void VKGSRender::update_draw_state()
-{
-	m_profiler.start();
-
-	float actual_line_width = rsx::method_registers.line_width();
-	vkCmdSetLineWidth(*m_current_command_buffer, actual_line_width);
-
-	if (rsx::method_registers.poly_offset_fill_enabled())
-	{
-		//offset_bias is the constant factor, multiplied by the implementation factor R
-		//offst_scale is the slope factor, multiplied by the triangle slope factor M
-		vkCmdSetDepthBias(*m_current_command_buffer, rsx::method_registers.poly_offset_bias(), 0.f, rsx::method_registers.poly_offset_scale());
-	}
-	else
-	{
-		//Zero bias value - disables depth bias
-		vkCmdSetDepthBias(*m_current_command_buffer, 0.f, 0.f, 0.f);
-	}
-
-	//Update dynamic state
-	if (rsx::method_registers.blend_enabled())
-	{
-		//Update blend constants
-		auto blend_colors = rsx::get_constant_blend_colors();
-		vkCmdSetBlendConstants(*m_current_command_buffer, blend_colors.data());
-	}
-
-	if (rsx::method_registers.stencil_test_enabled())
-	{
-		const bool two_sided_stencil = rsx::method_registers.two_sided_stencil_test_enabled();
-		VkStencilFaceFlags face_flag = (two_sided_stencil) ? VK_STENCIL_FACE_FRONT_BIT : VK_STENCIL_FRONT_AND_BACK;
-
-		vkCmdSetStencilWriteMask(*m_current_command_buffer, face_flag, rsx::method_registers.stencil_mask());
-		vkCmdSetStencilCompareMask(*m_current_command_buffer, face_flag, rsx::method_registers.stencil_func_mask());
-		vkCmdSetStencilReference(*m_current_command_buffer, face_flag, rsx::method_registers.stencil_func_ref());
-
-		if (two_sided_stencil)
-		{
-			vkCmdSetStencilWriteMask(*m_current_command_buffer, VK_STENCIL_FACE_BACK_BIT, rsx::method_registers.back_stencil_mask());
-			vkCmdSetStencilCompareMask(*m_current_command_buffer, VK_STENCIL_FACE_BACK_BIT, rsx::method_registers.back_stencil_func_mask());
-			vkCmdSetStencilReference(*m_current_command_buffer, VK_STENCIL_FACE_BACK_BIT, rsx::method_registers.back_stencil_func_ref());
-		}
-	}
-
-	if (m_device->get_depth_bounds_support())
-	{
-		if (rsx::method_registers.depth_bounds_test_enabled())
-		{
-			//Update depth bounds min/max
-			vkCmdSetDepthBounds(*m_current_command_buffer, rsx::method_registers.depth_bounds_min(), rsx::method_registers.depth_bounds_max());
-		}
-		else
-		{
-			vkCmdSetDepthBounds(*m_current_command_buffer, 0.f, 1.f);
-		}
-	}
-
-	bind_viewport();
-
-	//TODO: Set up other render-state parameters into the program pipeline
-
-	m_frame_stats.setup_time += m_profiler.duration();
-}
-
-void VKGSRender::begin_render_pass()
-{
-	if (m_render_pass_open)
-		return;
-
-	const auto renderpass = (m_cached_renderpass)? m_cached_renderpass : vk::get_renderpass(*m_device, m_current_renderpass_key);
-
-	VkRenderPassBeginInfo rp_begin = {};
-	rp_begin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-	rp_begin.renderPass = renderpass;
-	rp_begin.framebuffer = m_draw_fbo->value;
-	rp_begin.renderArea.offset.x = 0;
-	rp_begin.renderArea.offset.y = 0;
-	rp_begin.renderArea.extent.width = m_draw_fbo->width();
-	rp_begin.renderArea.extent.height = m_draw_fbo->height();
-
-	vkCmdBeginRenderPass(*m_current_command_buffer, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
-	m_render_pass_open = true;
-}
-
-void VKGSRender::close_render_pass()
-{
-	if (!m_render_pass_open)
-		return;
-
-	vkCmdEndRenderPass(*m_current_command_buffer);
-	m_render_pass_open = false;
-}
-
-void VKGSRender::emit_geometry(u32 sub_index)
-{
-	auto &draw_call = rsx::method_registers.current_draw_clause;
-	m_profiler.start();
-
-	if (sub_index == 0)
-	{
-		analyse_inputs_interleaved(m_vertex_layout);
-
-		if (!m_vertex_layout.validate())
-		{
-			// No vertex inputs enabled
-			// Execute remainining pipeline barriers with NOP draw
-			do
-			{
-				draw_call.execute_pipeline_dependencies();
-			}
-			while (draw_call.next());
-
-			draw_call.end();
-			return;
-		}
-	}
-	else if (draw_call.execute_pipeline_dependencies() & rsx::vertex_base_changed)
-	{
-		// Rebase vertex bases instead of
-		for (auto &info : m_vertex_layout.interleaved_blocks)
-		{
-			const auto vertex_base_offset = rsx::method_registers.vertex_data_base_offset();
-			info.real_offset_address = rsx::get_address(rsx::get_vertex_offset_from_base(vertex_base_offset, info.base_offset), info.memory_location);
-		}
-	}
-
-	const auto old_persistent_buffer = m_persistent_attribute_storage ? m_persistent_attribute_storage->value : null_buffer_view->value;
-	const auto old_volatile_buffer = m_volatile_attribute_storage ? m_volatile_attribute_storage->value : null_buffer_view->value;
-
-	// Programs data is dependent on vertex state
-	auto upload_info = upload_vertex_data();
-	if (!upload_info.vertex_draw_count)
-	{
-		// Malformed vertex setup; abort
-		return;
-	}
-
-	m_frame_stats.vertex_upload_time += m_profiler.duration();
-
-	auto persistent_buffer = m_persistent_attribute_storage ? m_persistent_attribute_storage->value : null_buffer_view->value;
-	auto volatile_buffer = m_volatile_attribute_storage ? m_volatile_attribute_storage->value : null_buffer_view->value;
-	bool update_descriptors = false;
-
-	if (sub_index == 0)
-	{
-		update_descriptors = true;
-
-		// Allocate stream layout memory for this batch
-		m_vertex_layout_stream_info.range = rsx::method_registers.current_draw_clause.pass_count() * 128;
-		m_vertex_layout_stream_info.offset = m_vertex_layout_ring_info.alloc<256>(m_vertex_layout_stream_info.range);
-
-		if (vk::test_status_interrupt(vk::heap_changed))
-		{
-			if (m_vertex_layout_storage &&
-				m_vertex_layout_storage->info.buffer != m_vertex_layout_ring_info.heap->value)
-			{
-				m_current_frame->buffer_views_to_clean.push_back(std::move(m_vertex_layout_storage));
-			}
-
-			vk::clear_status_interrupt(vk::heap_changed);
-		}
-	}
-	else if (persistent_buffer != old_persistent_buffer || volatile_buffer != old_volatile_buffer)
-	{
-		// Need to update descriptors; make a copy for the next draw
-		VkDescriptorSet new_descriptor_set = allocate_descriptor_set();
-		std::array<VkCopyDescriptorSet, VK_NUM_DESCRIPTOR_BINDINGS> copy_set;
-
-		for (u32 n = 0; n < VK_NUM_DESCRIPTOR_BINDINGS; ++n)
-		{
-			copy_set[n] =
-			{
-				VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET,   // sType
-				nullptr,                                 // pNext
-				m_current_frame->descriptor_set,         // srcSet
-				n,                                       // srcBinding
-				0u,                                      // srcArrayElement
-				new_descriptor_set,                      // dstSet
-				n,                                       // dstBinding
-				0u,                                      // dstArrayElement
-				1u                                       // descriptorCount
-			};
-		}
-
-		vkUpdateDescriptorSets(*m_device, 0, 0, VK_NUM_DESCRIPTOR_BINDINGS, copy_set.data());
-		m_current_frame->descriptor_set = new_descriptor_set;
-
-		update_descriptors = true;
-	}
-
-	// Update vertex fetch parameters
-	update_vertex_env(sub_index, upload_info);
-
-	verify(HERE), m_vertex_layout_storage;
-	if (update_descriptors)
-	{
-		m_program->bind_uniform(persistent_buffer, VERTEX_BUFFERS_FIRST_BIND_SLOT, m_current_frame->descriptor_set);
-		m_program->bind_uniform(volatile_buffer, VERTEX_BUFFERS_FIRST_BIND_SLOT + 1, m_current_frame->descriptor_set);
-		m_program->bind_uniform(m_vertex_layout_storage->value, VERTEX_BUFFERS_FIRST_BIND_SLOT + 2, m_current_frame->descriptor_set);
-	}
-
-	if (!m_render_pass_open)
-	{
-		vkCmdBindPipeline(*m_current_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_program->pipeline);
-		update_draw_state();
-		begin_render_pass();
-
-		if (cond_render_ctrl.hw_cond_active && m_device->get_conditional_render_support())
-		{
-			// It is inconvenient that conditional rendering breaks other things like compute dispatch
-			// TODO: If this is heavy, add refactor the resources into global and add checks around compute dispatch
-			VkConditionalRenderingBeginInfoEXT info{};
-			info.sType = VK_STRUCTURE_TYPE_CONDITIONAL_RENDERING_BEGIN_INFO_EXT;
-			info.buffer = m_cond_render_buffer->value;
-
-			m_device->cmdBeginConditionalRenderingEXT(*m_current_command_buffer, &info);
-			m_current_command_buffer->flags |= vk::command_buffer::cb_has_conditional_render;
-		}
-	}
-
-	// Bind the new set of descriptors for use with this draw call
-	vkCmdBindDescriptorSets(*m_current_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &m_current_frame->descriptor_set, 0, nullptr);
-
-	m_frame_stats.setup_time += m_profiler.duration();
-
-	if (!upload_info.index_info)
-	{
-		if (draw_call.is_single_draw())
-		{
-			vkCmdDraw(*m_current_command_buffer, upload_info.vertex_draw_count, 1, 0, 0);
-		}
-		else
-		{
-			u32 vertex_offset = 0;
-			const auto subranges = draw_call.get_subranges();
-			for (const auto &range : subranges)
-			{
-				vkCmdDraw(*m_current_command_buffer, range.count, 1, vertex_offset, 0);
-				vertex_offset += range.count;
-			}
-		}
-	}
-	else
-	{
-		const VkIndexType index_type = std::get<1>(*upload_info.index_info);
-		const VkDeviceSize offset = std::get<0>(*upload_info.index_info);
-
-		vkCmdBindIndexBuffer(*m_current_command_buffer, m_index_buffer_ring_info.heap->value, offset, index_type);
-
-		if (rsx::method_registers.current_draw_clause.is_single_draw())
-		{
-			const u32 index_count = upload_info.vertex_draw_count;
-			vkCmdDrawIndexed(*m_current_command_buffer, index_count, 1, 0, 0, 0);
-		}
-		else
-		{
-			u32 vertex_offset = 0;
-			const auto subranges = draw_call.get_subranges();
-			for (const auto &range : subranges)
-			{
-				const auto count = get_index_count(draw_call.primitive, range.count);
-				vkCmdDrawIndexed(*m_current_command_buffer, count, 1, vertex_offset, 0, 0);
-				vertex_offset += count;
-			}
-		}
-	}
-
-	m_frame_stats.draw_exec_time += m_profiler.duration();
-}
-
-void VKGSRender::end()
-{
-	if (skip_current_frame || !framebuffer_status_valid || swapchain_unavailable || cond_render_ctrl.disable_rendering())
-	{
-		execute_nop_draw();
-		rsx::thread::end();
-		return;
-	}
-
-	// Check for frame resource status here because it is possible for an async flip to happen between begin/end
-	if (UNLIKELY(m_current_frame->flags & frame_context_state::dirty))
-	{
-		check_present_status();
-
-		if (UNLIKELY(m_current_frame->swap_command_buffer))
-		{
-			// Borrow time by using the auxilliary context
-			m_aux_frame_context.grab_resources(*m_current_frame);
-			m_current_frame = &m_aux_frame_context;
-		}
-		else if (m_current_frame->used_descriptors)
-		{
-			m_current_frame->descriptor_pool.reset(0);
-			m_current_frame->used_descriptors = 0;
-		}
-
-		verify(HERE), !m_current_frame->swap_command_buffer;
-
-		m_current_frame->flags &= ~frame_context_state::dirty;
-	}
-
-	m_profiler.start();
-
-	// Check for data casts
-	// NOTE: This is deprecated and will be removed soon. The memory barrier invoked before rendering does this better
-	auto ds = std::get<1>(m_rtts.m_bound_depth_stencil);
-	if (ds && ds->old_contents.size() == 1 &&
-		ds->old_contents[0].source->info.format == VK_FORMAT_B8G8R8A8_UNORM)
-	{
-		auto key = vk::get_renderpass_key(ds->info.format);
-		auto render_pass = vk::get_renderpass(*m_device, key);
-		verify("Usupported renderpass configuration" HERE), render_pass != VK_NULL_HANDLE;
-
-		VkClearDepthStencilValue clear = { 1.f, 0xFF };
-		VkImageSubresourceRange range = { VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 0, 1, 0, 1 };
-
-		// Initialize source
-		auto src = vk::as_rtt(ds->old_contents[0].source);
-		src->read_barrier(*m_current_command_buffer);
-
-		switch (src->current_layout)
-		{
-		case VK_IMAGE_LAYOUT_GENERAL:
-		case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
-			break;
-		//case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
-		default:
-			src->change_layout(*m_current_command_buffer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-			break;
-		}
-
-		// Clear explicitly before starting the inheritance transfer
-		const bool preinitialized = (ds->current_layout == VK_IMAGE_LAYOUT_GENERAL);
-		if (!preinitialized) ds->push_layout(*m_current_command_buffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-		vkCmdClearDepthStencilImage(*m_current_command_buffer, ds->value, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear, 1, &range);
-		if (!preinitialized) ds->pop_layout(*m_current_command_buffer);
-
-		// TODO: Stencil transfer
-		ds->old_contents[0].init_transfer(ds);
-		m_depth_converter->run(*m_current_command_buffer,
-			ds->old_contents[0].src_rect(),
-			ds->old_contents[0].dst_rect(),
-			src->get_view(0xAAE4, rsx::default_remap_vector),
-			ds, render_pass);
-
-		// TODO: Flush management to avoid pass running out of ubo space (very unlikely)
-		ds->on_write();
-	}
-
-	//Load textures
-	{
-		std::lock_guard lock(m_sampler_mutex);
-		bool update_framebuffer_sourced = false;
-		bool check_for_cyclic_refs = false;
-
-		if (UNLIKELY(surface_store_tag != m_rtts.cache_tag))
-		{
-			update_framebuffer_sourced = true;
-			surface_store_tag = m_rtts.cache_tag;
-		}
-
-		for (int i = 0; i < rsx::limits::fragment_textures_count; ++i)
-		{
-			if (!fs_sampler_state[i])
-				fs_sampler_state[i] = std::make_unique<vk::texture_cache::sampled_image_descriptor>();
-
-			if (m_samplers_dirty || m_textures_dirty[i] ||
-				(update_framebuffer_sourced && fs_sampler_state[i]->upload_context == rsx::texture_upload_context::framebuffer_storage))
-			{
-				auto sampler_state = static_cast<vk::texture_cache::sampled_image_descriptor*>(fs_sampler_state[i].get());
-
-				if (rsx::method_registers.fragment_textures[i].enabled())
-				{
-					check_heap_status(VK_HEAP_CHECK_TEXTURE_UPLOAD_STORAGE);
-					*sampler_state = m_texture_cache.upload_texture(*m_current_command_buffer, rsx::method_registers.fragment_textures[i], m_rtts);
-
-					if (sampler_state->is_cyclic_reference)
-					{
-						check_for_cyclic_refs |= true;
-					}
-
-					bool replace = !fs_sampler_handles[i];
-					VkFilter mag_filter;
-					vk::minification_filter min_filter;
-					f32 min_lod = 0.f, max_lod = 0.f;
-					f32 lod_bias = 0.f;
-
-					const u32 texture_format = rsx::method_registers.fragment_textures[i].format() & ~(CELL_GCM_TEXTURE_UN | CELL_GCM_TEXTURE_LN);
-					VkBool32 compare_enabled = VK_FALSE;
-					VkCompareOp depth_compare_mode = VK_COMPARE_OP_NEVER;
-
-					if (texture_format >= CELL_GCM_TEXTURE_DEPTH24_D8 && texture_format <= CELL_GCM_TEXTURE_DEPTH16_FLOAT)
-					{
-						if (m_device->get_formats_support().d24_unorm_s8)
-						{
-							// NOTE:
-							// The nvidia-specific format D24S8 has a special way of doing depth comparison that matches the PS3
-							// In case of projected shadow lookup the result of the divide operation has its Z clamped to [0-1] before comparison
-							// Most other wide formats (Z bits > 16) do not behave this way and depth greater than 1 is possible due to the use of floating point as storage
-							// Compare operations for these formats (such as D32_SFLOAT) are therefore emulated for correct results
-
-							// NOTE2:
-							// To improve reusability, DEPTH16 shadow ops are also emulated if D24S8 support is not available
-
-							compare_enabled = VK_TRUE;
-							depth_compare_mode = vk::get_compare_func(rsx::method_registers.fragment_textures[i].zfunc(), true);
-						}
-					}
-
-					const bool aniso_override = !g_cfg.video.strict_rendering_mode && g_cfg.video.anisotropic_level_override > 0;
-					const f32 af_level = aniso_override ? g_cfg.video.anisotropic_level_override : vk::max_aniso(rsx::method_registers.fragment_textures[i].max_aniso());
-					const auto wrap_s = vk::vk_wrap_mode(rsx::method_registers.fragment_textures[i].wrap_s());
-					const auto wrap_t = vk::vk_wrap_mode(rsx::method_registers.fragment_textures[i].wrap_t());
-					const auto wrap_r = vk::vk_wrap_mode(rsx::method_registers.fragment_textures[i].wrap_r());
-					const auto border_color = vk::get_border_color(rsx::method_registers.fragment_textures[i].border_color());
-
-					// Check if non-point filtering can even be used on this format
-					bool can_sample_linear;
-					if (LIKELY(sampler_state->format_class == rsx::format_type::color))
-					{
-						// Most PS3-like formats can be linearly filtered without problem
-						can_sample_linear = true;
-					}
-					else
-					{
-						// Not all GPUs support linear filtering of depth formats
-						const auto vk_format = sampler_state->image_handle ? sampler_state->image_handle->image()->format() :
-							vk::get_compatible_sampler_format(m_device->get_formats_support(), sampler_state->external_subresource_desc.gcm_format);
-
-						can_sample_linear = m_device->get_format_properties(vk_format).optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
-					}
-
-					const auto mipmap_count = rsx::method_registers.fragment_textures[i].get_exact_mipmap_count();
-					min_filter = vk::get_min_filter(rsx::method_registers.fragment_textures[i].min_filter());
-
-					if (can_sample_linear)
-					{
-						mag_filter = vk::get_mag_filter(rsx::method_registers.fragment_textures[i].mag_filter());
-					}
-					else
-					{
-						mag_filter = VK_FILTER_NEAREST;
-						min_filter.filter = VK_FILTER_NEAREST;
-					}
-
-					if (min_filter.sample_mipmaps && mipmap_count > 1)
-					{
-						f32 actual_mipmaps;
-						if (sampler_state->upload_context == rsx::texture_upload_context::shader_read)
-						{
-							actual_mipmaps = static_cast<f32>(mipmap_count);
-						}
-						else if (sampler_state->external_subresource_desc.op == rsx::deferred_request_command::mipmap_gather)
-						{
-							// Clamp min and max lod
-							actual_mipmaps = static_cast<f32>(sampler_state->external_subresource_desc.sections_to_copy.size());
-						}
-						else
-						{
-							actual_mipmaps = 1.f;
-						}
-
-						if (actual_mipmaps > 1.f)
-						{
-							min_lod = rsx::method_registers.fragment_textures[i].min_lod();
-							max_lod = rsx::method_registers.fragment_textures[i].max_lod();
-							lod_bias = rsx::method_registers.fragment_textures[i].bias();
-
-							min_lod = std::min(min_lod, actual_mipmaps - 1.f);
-							max_lod = std::min(max_lod, actual_mipmaps - 1.f);
-
-							if (min_filter.mipmap_mode == VK_SAMPLER_MIPMAP_MODE_NEAREST)
-							{
-								// Round to nearest 0.5 to work around some broken games
-								// Unlike openGL, sampler parameters cannot be dynamically changed on vulkan, leading to many permutations
-								lod_bias = std::floor(lod_bias * 2.f + 0.5f) * 0.5f;
-							}
-						}
-						else
-						{
-							min_lod = max_lod = lod_bias = 0.f;
-							min_filter.mipmap_mode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-						}
-					}
-
-					if (fs_sampler_handles[i] && m_textures_dirty[i])
-					{
-						if (!fs_sampler_handles[i]->matches(wrap_s, wrap_t, wrap_r, false, lod_bias, af_level, min_lod, max_lod,
-							min_filter.filter, mag_filter, min_filter.mipmap_mode, border_color, compare_enabled, depth_compare_mode))
-						{
-							replace = true;
-						}
-					}
-
-					if (replace)
-					{
-						fs_sampler_handles[i] = vk::get_resource_manager()->find_sampler(*m_device, wrap_s, wrap_t, wrap_r, false, lod_bias, af_level, min_lod, max_lod,
-							min_filter.filter, mag_filter, min_filter.mipmap_mode, border_color, compare_enabled, depth_compare_mode);
-					}
-				}
-				else
-				{
-					*sampler_state = {};
-				}
-
-				m_textures_dirty[i] = false;
-			}
-		}
-
-		for (int i = 0; i < rsx::limits::vertex_textures_count; ++i)
-		{
-			if (!vs_sampler_state[i])
-				vs_sampler_state[i] = std::make_unique<vk::texture_cache::sampled_image_descriptor>();
-
-			if (m_samplers_dirty || m_vertex_textures_dirty[i] ||
-				(update_framebuffer_sourced && vs_sampler_state[i]->upload_context == rsx::texture_upload_context::framebuffer_storage))
-			{
-				auto sampler_state = static_cast<vk::texture_cache::sampled_image_descriptor*>(vs_sampler_state[i].get());
-
-				if (rsx::method_registers.vertex_textures[i].enabled())
-				{
-					check_heap_status(VK_HEAP_CHECK_TEXTURE_UPLOAD_STORAGE);
-					*sampler_state = m_texture_cache.upload_texture(*m_current_command_buffer, rsx::method_registers.vertex_textures[i], m_rtts);
-
-					if (sampler_state->is_cyclic_reference || sampler_state->external_subresource_desc.do_not_cache)
-					{
-						check_for_cyclic_refs |= true;
-					}
-
-					bool replace = !vs_sampler_handles[i];
-					const VkBool32 unnormalized_coords = !!(rsx::method_registers.vertex_textures[i].format() & CELL_GCM_TEXTURE_UN);
-					const auto min_lod = rsx::method_registers.vertex_textures[i].min_lod();
-					const auto max_lod = rsx::method_registers.vertex_textures[i].max_lod();
-					const auto border_color = vk::get_border_color(rsx::method_registers.vertex_textures[i].border_color());
-
-					if (vs_sampler_handles[i])
-					{
-						if (!vs_sampler_handles[i]->matches(VK_SAMPLER_ADDRESS_MODE_REPEAT, VK_SAMPLER_ADDRESS_MODE_REPEAT, VK_SAMPLER_ADDRESS_MODE_REPEAT,
-							unnormalized_coords, 0.f, 1.f, min_lod, max_lod, VK_FILTER_NEAREST, VK_FILTER_NEAREST, VK_SAMPLER_MIPMAP_MODE_NEAREST, border_color))
-						{
-							replace = true;
-						}
-					}
-
-					if (replace)
-					{
-						vs_sampler_handles[i] = vk::get_resource_manager()->find_sampler(
-							*m_device,
-							VK_SAMPLER_ADDRESS_MODE_REPEAT, VK_SAMPLER_ADDRESS_MODE_REPEAT, VK_SAMPLER_ADDRESS_MODE_REPEAT,
-							unnormalized_coords,
-							0.f, 1.f, min_lod, max_lod,
-							VK_FILTER_NEAREST, VK_FILTER_NEAREST, VK_SAMPLER_MIPMAP_MODE_NEAREST, border_color);
-					}
-				}
-				else
-					*sampler_state = {};
-
-				m_vertex_textures_dirty[i] = false;
-			}
-		}
-
-		m_samplers_dirty.store(false);
-
-		if (check_for_cyclic_refs)
-		{
-			// Regenerate renderpass key
-			if (const auto key = vk::get_renderpass_key(m_fbo_images, m_current_renderpass_key);
-				key != m_current_renderpass_key)
-			{
-				m_current_renderpass_key = key;
-				m_cached_renderpass = VK_NULL_HANDLE;
-			}
-		}
-	}
-
-	m_frame_stats.textures_upload_time += m_profiler.duration();
-
-	if (!load_program())
-	{
-		// Program is not ready, skip drawing this
-		std::this_thread::yield();
-		execute_nop_draw();
-		// m_rtts.on_write(); - breaks games for obvious reasons
-		rsx::thread::end();
-		return;
-	}
-
-	// Allocate descriptor set
-	check_descriptors();
-	m_current_frame->descriptor_set = allocate_descriptor_set();
-
-	// Load program execution environment
-	load_program_env();
-
-	m_frame_stats.setup_time += m_profiler.duration();
-
-	for (int i = 0; i < rsx::limits::fragment_textures_count; ++i)
-	{
-		if (current_fp_metadata.referenced_textures_mask & (1 << i))
-		{
-			vk::image_view* view = nullptr;
-			auto sampler_state = static_cast<vk::texture_cache::sampled_image_descriptor*>(fs_sampler_state[i].get());
-
-			if (rsx::method_registers.fragment_textures[i].enabled() &&
-				sampler_state->validate())
-			{
-				if (view = sampler_state->image_handle; !view)
-				{
-					//Requires update, copy subresource
-					view = m_texture_cache.create_temporary_subresource(*m_current_command_buffer, sampler_state->external_subresource_desc);
-				}
-				else
-				{
-					switch (auto raw = view->image(); raw->current_layout)
-					{
-					default:
-					//case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
-						break;
-					case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
-						verify(HERE), sampler_state->upload_context == rsx::texture_upload_context::blit_engine_dst;
-						raw->change_layout(*m_current_command_buffer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-						break;
-					case VK_IMAGE_LAYOUT_GENERAL:
-						verify(HERE), sampler_state->upload_context == rsx::texture_upload_context::framebuffer_storage;
-						if (!sampler_state->is_cyclic_reference)
-						{
-							// This was used in a cyclic ref before, but is missing a barrier
-							// No need for a full stall, use a custom barrier instead
-							VkPipelineStageFlags src_stage;
-							VkAccessFlags src_access;
-							if (raw->aspect() == VK_IMAGE_ASPECT_COLOR_BIT)
-							{
-								src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-								src_access = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-							}
-							else
-							{
-								src_stage = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-								src_access = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-							}
-
-							vk::insert_image_memory_barrier(
-								*m_current_command_buffer,
-								raw->value,
-								VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-								src_stage, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-								src_access, VK_ACCESS_SHADER_READ_BIT,
-								{ raw->aspect(), 0, 1, 0, 1 });
-
-							raw->current_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-						}
-						break;
-					case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
-					case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
-						verify(HERE), sampler_state->upload_context == rsx::texture_upload_context::framebuffer_storage, !sampler_state->is_cyclic_reference;
-						raw->change_layout(*m_current_command_buffer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-						break;
-					}
-				}
-			}
-
-			if (LIKELY(view))
-			{
-				m_program->bind_uniform({ fs_sampler_handles[i]->value, view->value, view->image()->current_layout },
-					i,
-					::glsl::program_domain::glsl_fragment_program,
-					m_current_frame->descriptor_set);
-
-				if (current_fragment_program.redirected_textures & (1 << i))
-				{
-					// Stencil mirror required
-					auto root_image = static_cast<vk::viewable_image*>(view->image());
-					auto stencil_view = root_image->get_view(0xAAE4, rsx::default_remap_vector, VK_IMAGE_ASPECT_STENCIL_BIT);
-
-					if (!m_stencil_mirror_sampler)
-					{
-						m_stencil_mirror_sampler = std::make_unique<vk::sampler>(*m_device,
-							VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
-							VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
-							VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
-							VK_FALSE, 0.f, 1.f, 0.f, 0.f,
-							VK_FILTER_NEAREST, VK_FILTER_NEAREST, VK_SAMPLER_MIPMAP_MODE_NEAREST,
-							VK_BORDER_COLOR_INT_OPAQUE_BLACK);
-					}
-
-					m_program->bind_uniform({ m_stencil_mirror_sampler->value, stencil_view->value, stencil_view->image()->current_layout },
-						i,
-						::glsl::program_domain::glsl_fragment_program,
-						m_current_frame->descriptor_set,
-						true);
-				}
-			}
-			else
-			{
-				m_program->bind_uniform({ vk::null_sampler(), vk::null_image_view(*m_current_command_buffer)->value, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
-					i,
-					::glsl::program_domain::glsl_fragment_program,
-					m_current_frame->descriptor_set);
-
-				if (current_fragment_program.redirected_textures & (1 << i))
-				{
-					m_program->bind_uniform({ vk::null_sampler(), vk::null_image_view(*m_current_command_buffer)->value, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
-						i,
-						::glsl::program_domain::glsl_fragment_program,
-						m_current_frame->descriptor_set,
-						true);
-				}
-			}
-		}
-	}
-
-	for (int i = 0; i < rsx::limits::vertex_textures_count; ++i)
-	{
-		if (current_vp_metadata.referenced_textures_mask & (1 << i))
-		{
-			if (!rsx::method_registers.vertex_textures[i].enabled())
-			{
-				m_program->bind_uniform({ vk::null_sampler(), vk::null_image_view(*m_current_command_buffer)->value, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
-					i,
-					::glsl::program_domain::glsl_vertex_program,
-					m_current_frame->descriptor_set);
-
-				continue;
-			}
-
-			auto sampler_state = static_cast<vk::texture_cache::sampled_image_descriptor*>(vs_sampler_state[i].get());
-			auto image_ptr = sampler_state->image_handle;
-
-			if (!image_ptr && sampler_state->validate())
-			{
-				image_ptr = m_texture_cache.create_temporary_subresource(*m_current_command_buffer, sampler_state->external_subresource_desc);
-				m_vertex_textures_dirty[i] = true;
-			}
-
-			if (!image_ptr)
-			{
-				LOG_ERROR(RSX, "Texture upload failed to vtexture index %d. Binding null sampler.", i);
-				m_program->bind_uniform({ vk::null_sampler(), vk::null_image_view(*m_current_command_buffer)->value, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
-					i,
-					::glsl::program_domain::glsl_vertex_program,
-					m_current_frame->descriptor_set);
-
-				continue;
-			}
-
-			switch (auto raw = image_ptr->image(); raw->current_layout)
-			{
-			default:
-			//case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
-				break;
-			case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
-				verify(HERE), sampler_state->upload_context == rsx::texture_upload_context::blit_engine_dst;
-				raw->change_layout(*m_current_command_buffer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-				break;
-			case VK_IMAGE_LAYOUT_GENERAL:
-				verify(HERE), sampler_state->upload_context == rsx::texture_upload_context::framebuffer_storage;
-				if (!sampler_state->is_cyclic_reference)
-				{
-					// Custom barrier, see similar block in FS stage
-					VkPipelineStageFlags src_stage;
-					VkAccessFlags src_access;
-					if (raw->aspect() == VK_IMAGE_ASPECT_COLOR_BIT)
-					{
-						src_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-						src_access = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-					}
-					else
-					{
-						src_stage = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-						src_access = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-					}
-
-					vk::insert_image_memory_barrier(
-						*m_current_command_buffer,
-						raw->value,
-						VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-						src_stage, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-						src_access, VK_ACCESS_SHADER_READ_BIT,
-						{ raw->aspect(), 0, 1, 0, 1 });
-
-					raw->current_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-				}
-				break;
-			case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
-			case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
-				verify(HERE), sampler_state->upload_context == rsx::texture_upload_context::framebuffer_storage;
-				raw->change_layout(*m_current_command_buffer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-				break;
-			}
-
-			m_program->bind_uniform({ vs_sampler_handles[i]->value, image_ptr->value, image_ptr->image()->current_layout },
-				i,
-				::glsl::program_domain::glsl_vertex_program,
-				m_current_frame->descriptor_set);
-		}
-	}
-
-	m_texture_cache.release_uncached_temporary_subresources();
-
-	m_frame_stats.textures_upload_time += m_profiler.duration();
-
-	if (m_current_command_buffer->flags & vk::command_buffer::cb_load_occluson_task)
-	{
-		u32 occlusion_id = m_occlusion_query_pool.find_free_slot();
-		if (occlusion_id == UINT32_MAX)
-		{
-			// Force flush
-			LOG_ERROR(RSX, "[Performance Warning] Out of free occlusion slots. Forcing hard sync.");
-			ZCULL_control::sync(this);
-
-			occlusion_id = m_occlusion_query_pool.find_free_slot();
-			if (occlusion_id == UINT32_MAX)
-			{
-				//LOG_ERROR(RSX, "Occlusion pool overflow");
-				if (m_current_task) m_current_task->result = 1;
-			}
-		}
-
-		// Begin query
-		m_occlusion_query_pool.begin_query(*m_current_command_buffer, occlusion_id);
-
-		auto &data = m_occlusion_map[m_active_query_info->driver_handle];
-		data.indices.push_back(occlusion_id);
-		data.set_sync_command_buffer(m_current_command_buffer);
-
-		m_current_command_buffer->flags &= ~vk::command_buffer::cb_load_occluson_task;
-		m_current_command_buffer->flags |= (vk::command_buffer::cb_has_occlusion_task | vk::command_buffer::cb_has_open_query);
-	}
-
-	bool primitive_emulated = false;
-	vk::get_appropriate_topology(rsx::method_registers.current_draw_clause.primitive, primitive_emulated);
-
-	// Apply write memory barriers
-	if (ds) ds->write_barrier(*m_current_command_buffer);
-
-	for (auto &rtt : m_rtts.m_bound_render_targets)
-	{
-		if (auto surface = std::get<1>(rtt))
-		{
-			surface->write_barrier(*m_current_command_buffer);
-		}
-	}
-
-	// Final heap check...
-	check_heap_status(VK_HEAP_CHECK_VERTEX_STORAGE | VK_HEAP_CHECK_VERTEX_LAYOUT_STORAGE);
-
-	u32 sub_index = 0;
-	rsx::method_registers.current_draw_clause.begin();
-	do
-	{
-		emit_geometry(sub_index++);
-	}
-	while (rsx::method_registers.current_draw_clause.next());
-
-	if (m_current_command_buffer->flags & vk::command_buffer::cb_has_conditional_render)
-	{
-		m_device->cmdEndConditionalRenderingEXT(*m_current_command_buffer);
-		m_current_command_buffer->flags &= ~(vk::command_buffer::cb_has_conditional_render);
-	}
-
-	// Close any open passes unconditionally
-	close_render_pass();
-
-	m_rtts.on_write(m_framebuffer_layout.color_write_enabled.data(), m_framebuffer_layout.zeta_write_enabled);
-
-	rsx::thread::end();
-}
-
 void VKGSRender::set_viewport()
 {
 	const auto clip_width = rsx::apply_resolution_scale(rsx::method_registers.surface_clip_width(), true);
@@ -1879,63 +1000,10 @@ void VKGSRender::on_init_thread()
 	}
 	else
 	{
-		struct native_helper : vk::shader_cache::progress_dialog_helper
-		{
-			rsx::thread *owner = nullptr;
-			std::shared_ptr<rsx::overlays::message_dialog> dlg;
-
-			native_helper(VKGSRender *ptr) :
-				owner(ptr) {}
-
-			void create() override
-			{
-				MsgDialogType type = {};
-				type.disable_cancel = true;
-				type.progress_bar_count = 2;
-
-				dlg = g_fxo->get<rsx::overlays::display_manager>()->create<rsx::overlays::message_dialog>(!!g_cfg.video.shader_preloading_dialog.use_custom_background);
-				dlg->progress_bar_set_taskbar_index(-1);
-				dlg->show(false, "Loading precompiled shaders from disk...", type, [](s32 status)
-				{
-					if (status != CELL_OK)
-						Emu.Stop();
-				});
-			}
-
-			void update_msg(u32 index, u32 processed, u32 entry_count) override
-			{
-				const char *text = index == 0 ? "Loading pipeline object %u of %u" : "Compiling pipeline object %u of %u";
-				dlg->progress_bar_set_message(index, fmt::format(text, processed, entry_count));
-				owner->flip({});
-			}
-
-			void inc_value(u32 index, u32 value) override
-			{
-				dlg->progress_bar_increment(index, static_cast<f32>(value));
-				owner->flip({});
-			}
-
-			void set_limit(u32 index, u32 limit) override
-			{
-				dlg->progress_bar_set_limit(index, limit);
-				owner->flip({});
-			}
-
-			void refresh() override
-			{
-				dlg->refresh();
-			}
-
-			void close() override
-			{
-				dlg->return_code = CELL_OK;
-				dlg->close();
-			}
-		}
-		helper(this);
+		rsx::shader_loading_dialog_native dlg(this);
 
 		// TODO: Handle window resize messages during loading on GPUs without OUT_OF_DATE_KHR support
-		m_shaders_cache->load(&helper, *m_device, pipeline_layout);
+		m_shaders_cache->load(&dlg, *m_device, pipeline_layout);
 	}
 }
 
@@ -2161,7 +1229,6 @@ void VKGSRender::clear_surface(u32 mask)
 	{
 		begin_render_pass();
 		vkCmdClearAttachments(*m_current_command_buffer, ::size32(clear_descriptors), clear_descriptors.data(), 1, &region);
-		close_render_pass();
 	}
 }
 
@@ -2203,7 +1270,7 @@ void VKGSRender::flush_command_queue(bool hard_sync)
 
 	if (!m_current_command_buffer->poke())
 	{
-		LOG_ERROR(RSX, "CB chain has run out of free entries!");
+		rsx_log.error("CB chain has run out of free entries!");
 	}
 
 	m_current_command_buffer->reset();
@@ -2268,196 +1335,6 @@ void VKGSRender::sync_hint(rsx::FIFO_hint hint, void* args)
 	}
 }
 
-void VKGSRender::advance_queued_frames()
-{
-	// Check all other frames for completion and clear resources
-	check_present_status();
-
-	//m_rtts storage is double buffered and should be safe to tag on frame boundary
-	m_rtts.free_invalidated();
-
-	//texture cache is also double buffered to prevent use-after-free
-	m_texture_cache.on_frame_end();
-	m_samplers_dirty.store(true);
-
-	vk::remove_unused_framebuffers();
-
-	m_vertex_cache->purge();
-	m_current_frame->tag_frame_end(m_attrib_ring_info.get_current_put_pos_minus_one(),
-		m_vertex_env_ring_info.get_current_put_pos_minus_one(),
-		m_fragment_env_ring_info.get_current_put_pos_minus_one(),
-		m_vertex_layout_ring_info.get_current_put_pos_minus_one(),
-		m_fragment_texture_params_ring_info.get_current_put_pos_minus_one(),
-		m_fragment_constants_ring_info.get_current_put_pos_minus_one(),
-		m_transform_constants_ring_info.get_current_put_pos_minus_one(),
-		m_index_buffer_ring_info.get_current_put_pos_minus_one(),
-		m_texture_upload_buffer_ring_info.get_current_put_pos_minus_one());
-
-	m_queued_frames.push_back(m_current_frame);
-	verify(HERE), m_queued_frames.size() <= VK_MAX_ASYNC_FRAMES;
-
-	m_current_queue_index = (m_current_queue_index + 1) % VK_MAX_ASYNC_FRAMES;
-	m_current_frame = &frame_context_storage[m_current_queue_index];
-	m_current_frame->flags |= frame_context_state::dirty;
-
-	vk::advance_frame_counter();
-}
-
-void VKGSRender::present(frame_context_t *ctx)
-{
-	verify(HERE), ctx->present_image != UINT32_MAX;
-
-	// Partial CS flush
-	ctx->swap_command_buffer->flush();
-
-	if (!swapchain_unavailable)
-	{
-		switch (VkResult error = m_swapchain->present(ctx->present_wait_semaphore, ctx->present_image))
-		{
-		case VK_SUCCESS:
-			break;
-		case VK_SUBOPTIMAL_KHR:
-			should_reinitialize_swapchain = true;
-			break;
-		case VK_ERROR_OUT_OF_DATE_KHR:
-			swapchain_unavailable = true;
-			break;
-		default:
-			vk::die_with_error(HERE, error);
-		}
-	}
-
-	// Presentation image released; reset value
-	ctx->present_image = UINT32_MAX;
-}
-
-void VKGSRender::queue_swap_request()
-{
-	verify(HERE), !m_current_frame->swap_command_buffer;
-	m_current_frame->swap_command_buffer = m_current_command_buffer;
-
-	if (m_swapchain->is_headless())
-	{
-		m_swapchain->end_frame(*m_current_command_buffer, m_current_frame->present_image);
-		close_and_submit_command_buffer(m_current_command_buffer->submit_fence);
-	}
-	else
-	{
-		close_and_submit_command_buffer(m_current_command_buffer->submit_fence,
-			m_current_frame->acquire_signal_semaphore,
-			m_current_frame->present_wait_semaphore,
-			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT);
-	}
-
-	// Signal pending state as the command queue is now closed
-	m_current_frame->swap_command_buffer->pending = true;
-
-	// Set up a present request for this frame as well
-	present(m_current_frame);
-
-	// Grab next cb in line and make it usable
-	m_current_cb_index = (m_current_cb_index + 1) % VK_MAX_ASYNC_CB_COUNT;
-	m_current_command_buffer = &m_primary_cb_list[m_current_cb_index];
-	m_current_command_buffer->reset();
-
-	// Set up new pointers for the next frame
-	advance_queued_frames();
-	open_command_buffer();
-}
-
-void VKGSRender::frame_context_cleanup(frame_context_t *ctx, bool free_resources)
-{
-	verify(HERE), ctx->swap_command_buffer;
-
-	if (ctx->swap_command_buffer->pending)
-	{
-		// Perform hard swap here
-		if (ctx->swap_command_buffer->wait(FRAME_PRESENT_TIMEOUT) != VK_SUCCESS)
-		{
-			// Lost surface/device, release swapchain
-			swapchain_unavailable = true;
-		}
-
-		free_resources = true;
-	}
-
-	if (free_resources)
-	{
-		if (g_cfg.video.overlay)
-		{
-			m_text_writer->reset_descriptors();
-		}
-
-		if (m_overlay_manager && m_overlay_manager->has_dirty())
-		{
-			m_overlay_manager->lock();
-
-			std::vector<u32> uids_to_dispose;
-			uids_to_dispose.reserve(m_overlay_manager->get_dirty().size());
-
-			for (const auto& view : m_overlay_manager->get_dirty())
-			{
-				m_ui_renderer->remove_temp_resources(view->uid);
-				uids_to_dispose.push_back(view->uid);
-			}
-
-			m_overlay_manager->unlock();
-			m_overlay_manager->dispose(uids_to_dispose);
-		}
-
-		vk::reset_global_resources();
-
-		m_attachment_clear_pass->free_resources();
-		m_depth_converter->free_resources();
-		m_ui_renderer->free_resources();
-		m_video_output_pass->free_resources();
-
-		ctx->buffer_views_to_clean.clear();
-
-		if (ctx->last_frame_sync_time > m_last_heap_sync_time)
-		{
-			m_last_heap_sync_time = ctx->last_frame_sync_time;
-
-			//Heap cleanup; deallocates memory consumed by the frame if it is still held
-			m_attrib_ring_info.m_get_pos = ctx->attrib_heap_ptr;
-			m_vertex_env_ring_info.m_get_pos = ctx->vtx_env_heap_ptr;
-			m_fragment_env_ring_info.m_get_pos = ctx->frag_env_heap_ptr;
-			m_fragment_constants_ring_info.m_get_pos = ctx->frag_const_heap_ptr;
-			m_transform_constants_ring_info.m_get_pos = ctx->vtx_const_heap_ptr;
-			m_vertex_layout_ring_info.m_get_pos = ctx->vtx_layout_heap_ptr;
-			m_fragment_texture_params_ring_info.m_get_pos = ctx->frag_texparam_heap_ptr;
-			m_index_buffer_ring_info.m_get_pos = ctx->index_heap_ptr;
-			m_texture_upload_buffer_ring_info.m_get_pos = ctx->texture_upload_heap_ptr;
-
-			m_attrib_ring_info.notify();
-			m_vertex_env_ring_info.notify();
-			m_fragment_env_ring_info.notify();
-			m_fragment_constants_ring_info.notify();
-			m_transform_constants_ring_info.notify();
-			m_vertex_layout_ring_info.notify();
-			m_fragment_texture_params_ring_info.notify();
-			m_index_buffer_ring_info.notify();
-			m_texture_upload_buffer_ring_info.notify();
-		}
-	}
-
-	ctx->swap_command_buffer = nullptr;
-
-	// Remove from queued list
-	while (!m_queued_frames.empty())
-	{
-		auto frame = m_queued_frames.front();
-		m_queued_frames.pop_front();
-
-		if (frame == ctx)
-		{
-			break;
-		}
-	}
-
-	vk::advance_completed_frame_counter();
-}
-
 void VKGSRender::do_local_task(rsx::FIFO_state state)
 {
 	if (m_queue_status & flush_queue_state::deadlock)
@@ -2465,12 +1342,17 @@ void VKGSRender::do_local_task(rsx::FIFO_state state)
 		// Clear offloader deadlock
 		// NOTE: It is not possible to handle regular flush requests before this is cleared
 		// NOTE: This may cause graphics corruption due to unsynchronized modification
-		flush_command_queue();
 		on_invalidate_memory_range(m_offloader_fault_range, m_offloader_fault_cause);
 		m_queue_status.clear(flush_queue_state::deadlock);
 	}
 
-	if (m_flush_requests.pending())
+	if (m_queue_status & flush_queue_state::flushing)
+	{
+		// Abort recursive CB submit requests.
+		// When flushing flag is already set, only deadlock events may be processed.
+		return;
+	}
+	else if (m_flush_requests.pending())
 	{
 		if (m_flush_queue_mutex.try_lock())
 		{
@@ -2568,7 +1450,7 @@ bool VKGSRender::load_program()
 	if (rsx::method_registers.cull_face_enabled())
 		properties.state.enable_cull_face(vk::get_cull_face(rsx::method_registers.cull_face_mode()));
 
-	for (int index = 0; index < m_draw_buffers.size(); ++index)
+	for (uint index = 0; index < m_draw_buffers.size(); ++index)
 	{
 		bool color_mask_b = rsx::method_registers.color_mask_b(index);
 		bool color_mask_g = rsx::method_registers.color_mask_g(index);
@@ -2675,18 +1557,12 @@ bool VKGSRender::load_program()
 	vertex_program.skip_vertex_input_check = true;
 	fragment_program.unnormalized_coords = 0;
 	m_program = m_prog_buffer->get_graphics_pipeline(vertex_program, fragment_program, properties,
-			!g_cfg.video.disable_asynchronous_shader_compiler, *m_device, pipeline_layout).get();
+			!g_cfg.video.disable_asynchronous_shader_compiler, true, *m_device, pipeline_layout).get();
 
 	vk::leave_uninterruptible();
 
 	if (m_prog_buffer->check_cache_missed())
 	{
-		if (m_prog_buffer->check_program_linked_flag())
-		{
-			// Program was linked or queued for linking
-			m_shaders_cache->store(properties, vertex_program, fragment_program);
-		}
-
 		// Notify the user with HUD notification
 		if (g_cfg.misc.show_shader_compilation_hint)
 		{
@@ -2802,19 +1678,18 @@ void VKGSRender::load_program_env()
 		m_fragment_texture_params_buffer_info = { m_fragment_texture_params_ring_info.heap->value, mem, 256 };
 	}
 
-	//if (1)
-	{
-		m_program->bind_uniform(m_vertex_env_buffer_info, VERTEX_PARAMS_BIND_SLOT, m_current_frame->descriptor_set);
-		m_program->bind_uniform(m_vertex_constants_buffer_info, VERTEX_CONSTANT_BUFFERS_BIND_SLOT, m_current_frame->descriptor_set);
-		m_program->bind_uniform(m_fragment_constants_buffer_info, FRAGMENT_CONSTANT_BUFFERS_BIND_SLOT, m_current_frame->descriptor_set);
-		m_program->bind_uniform(m_fragment_env_buffer_info, FRAGMENT_STATE_BIND_SLOT, m_current_frame->descriptor_set);
-		m_program->bind_uniform(m_fragment_texture_params_buffer_info, FRAGMENT_TEXTURE_PARAMS_BIND_SLOT, m_current_frame->descriptor_set);
-	}
+	const auto& binding_table = m_device->get_pipeline_binding_table();
+
+	m_program->bind_uniform(m_vertex_env_buffer_info, binding_table.vertex_params_bind_slot, m_current_frame->descriptor_set);
+	m_program->bind_uniform(m_vertex_constants_buffer_info, binding_table.vertex_constant_buffers_bind_slot, m_current_frame->descriptor_set);
+	m_program->bind_uniform(m_fragment_constants_buffer_info, binding_table.fragment_constant_buffers_bind_slot, m_current_frame->descriptor_set);
+	m_program->bind_uniform(m_fragment_env_buffer_info, binding_table.fragment_state_bind_slot, m_current_frame->descriptor_set);
+	m_program->bind_uniform(m_fragment_texture_params_buffer_info, binding_table.fragment_texture_params_bind_slot, m_current_frame->descriptor_set);
 
 	if (vk::emulate_conditional_rendering())
 	{
 		auto predicate = m_cond_render_buffer ? m_cond_render_buffer->value : vk::get_scratch_buffer()->value;
-		m_program->bind_buffer({ predicate, 0, 4 }, CONDITIONAL_RENDER_PREDICATE_SLOT, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, m_current_frame->descriptor_set);
+		m_program->bind_buffer({ predicate, 0, 4 }, binding_table.conditional_render_predicate_slot, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, m_current_frame->descriptor_set);
 	}
 
 	//Clear flags
@@ -2826,9 +1701,10 @@ void VKGSRender::update_vertex_env(u32 id, const vk::vertex_upload_info& vertex_
 {
 	// Actual allocation must have been done previously
 	u32 base_offset;
+	const u32 offset32 = static_cast<u32>(m_vertex_layout_stream_info.offset);
+	const u32 range32 = static_cast<u32>(m_vertex_layout_stream_info.range);
 
-	if (!m_vertex_layout_storage ||
-		!m_vertex_layout_storage->in_range(m_vertex_layout_stream_info.offset, m_vertex_layout_stream_info.range, base_offset))
+	if (!m_vertex_layout_storage || !m_vertex_layout_storage->in_range(offset32, range32, base_offset))
 	{
 		verify("Incompatible driver (MacOS?)" HERE), m_texbuffer_view_size >= m_vertex_layout_stream_info.range;
 
@@ -2873,7 +1749,13 @@ void VKGSRender::init_buffers(rsx::framebuffer_creation_context context, bool)
 
 void VKGSRender::close_and_submit_command_buffer(vk::fence* pFence, VkSemaphore wait_semaphore, VkSemaphore signal_semaphore, VkPipelineStageFlags pipeline_stage_flags)
 {
-	// NOTE: There is no need to wait for dma sync. When MTRSX is enabled, the commands are submitted in order anyway due to CSMT
+	verify("Recursive calls to submit the current commandbuffer will cause a deadlock" HERE), !m_queue_status.test_and_set(flush_queue_state::flushing);
+
+	// Workaround for deadlock occuring during RSX offloader fault
+	// TODO: Restructure command submission infrastructure to avoid this condition
+	const bool sync_success = g_fxo->get<rsx::dma_manager>()->sync();
+	const VkBool32 force_flush = !sync_success;
+
 	if (vk::test_status_interrupt(vk::heap_dirty))
 	{
 		if (m_attrib_ring_info.dirty() ||
@@ -2902,7 +1784,7 @@ void VKGSRender::close_and_submit_command_buffer(vk::fence* pFence, VkSemaphore 
 			m_secondary_command_buffer.end();
 
 			m_secondary_command_buffer.submit(m_swapchain->get_graphics_queue(),
-				VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+				VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, force_flush);
 		}
 
 		vk::clear_status_interrupt(vk::heap_dirty);
@@ -2917,7 +1799,7 @@ void VKGSRender::close_and_submit_command_buffer(vk::fence* pFence, VkSemaphore 
 #endif
 
 	// End any active renderpasses; the caller should handle reopening
-	if (m_render_pass_open)
+	if (vk::is_renderpass_open(*m_current_command_buffer))
 	{
 		close_render_pass();
 	}
@@ -2934,7 +1816,14 @@ void VKGSRender::close_and_submit_command_buffer(vk::fence* pFence, VkSemaphore 
 	m_current_command_buffer->tag();
 
 	m_current_command_buffer->submit(m_swapchain->get_graphics_queue(),
-		wait_semaphore, signal_semaphore, pFence, pipeline_stage_flags);
+		wait_semaphore, signal_semaphore, pFence, pipeline_stage_flags, force_flush);
+
+	if (force_flush)
+	{
+		verify(HERE), m_current_command_buffer->submit_fence->flushed;
+	}
+
+	m_queue_status.clear(flush_queue_state::flushing);
 }
 
 void VKGSRender::open_command_buffer()
@@ -3103,7 +1992,7 @@ void VKGSRender::prepare_rtts(rsx::framebuffer_creation_context context)
 			const bool lock = surface->is_depth_surface() ? !!g_cfg.video.write_depth_buffer :
 				!!g_cfg.video.write_color_buffers;
 
-			if (LIKELY(!lock))
+			if (!lock) [[likely]]
 			{
 				m_texture_cache.commit_framebuffer_memory_region(*m_current_command_buffer, surface->get_memory_range());
 				continue;
@@ -3150,483 +2039,6 @@ void VKGSRender::prepare_rtts(rsx::framebuffer_creation_context context)
 	set_scissor(clipped_scissor);
 
 	check_zcull_status(true);
-}
-
-void VKGSRender::reinitialize_swapchain()
-{
-	m_swapchain_dims.width = m_frame->client_width();
-	m_swapchain_dims.height = m_frame->client_height();
-
-	// Reject requests to acquire new swapchain if the window is minimized
-	// The NVIDIA driver will spam VK_ERROR_OUT_OF_DATE_KHR if you try to acquire an image from the swapchain and the window is minimized
-	// However, any attempt to actually renew the swapchain will crash the driver with VK_ERROR_DEVICE_LOST while the window is in this state
-	if (m_swapchain_dims.width == 0 || m_swapchain_dims.height == 0)
-	{
-		swapchain_unavailable = true;
-		return;
-	}
-
-	// NOTE: This operation will create a hard sync point
-	close_and_submit_command_buffer(m_current_command_buffer->submit_fence);
-	m_current_command_buffer->pending = true;
-	m_current_command_buffer->reset();
-
-	for (auto &ctx : frame_context_storage)
-	{
-		if (ctx.present_image == UINT32_MAX)
-			continue;
-
-		// Release present image by presenting it
-		frame_context_cleanup(&ctx, true);
-	}
-
-	// Drain all the queues
-	vkDeviceWaitIdle(*m_device);
-
-	// Rebuild swapchain. Old swapchain destruction is handled by the init_swapchain call
-	if (!m_swapchain->init(m_swapchain_dims.width, m_swapchain_dims.height))
-	{
-		LOG_WARNING(RSX, "Swapchain initialization failed. Request ignored [%dx%d]", m_swapchain_dims.width, m_swapchain_dims.height);
-		swapchain_unavailable = true;
-		open_command_buffer();
-		return;
-	}
-
-	// Prepare new swapchain images for use
-	open_command_buffer();
-
-	for (u32 i = 0; i < m_swapchain->get_swap_image_count(); ++i)
-	{
-		const auto target_layout = m_swapchain->get_optimal_present_layout();
-		const auto target_image = m_swapchain->get_image(i);
-		VkClearColorValue clear_color{};
-		VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-
-		vk::change_image_layout(*m_current_command_buffer, target_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, range);
-		vkCmdClearColorImage(*m_current_command_buffer, target_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_color, 1, &range);
-		vk::change_image_layout(*m_current_command_buffer, target_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, target_layout, range);
-	}
-
-	//Will have to block until rendering is completed
-	vk::fence resize_fence(*m_device);
-
-	//Flush the command buffer
-	close_and_submit_command_buffer(&resize_fence);
-	vk::wait_for_fence(&resize_fence);
-
-	m_current_command_buffer->reset();
-	open_command_buffer();
-
-	swapchain_unavailable = false;
-	should_reinitialize_swapchain = false;
-}
-
-void VKGSRender::flip(const rsx::display_flip_info_t& info)
-{
-	// Check swapchain condition/status
-	if (!m_swapchain->supports_automatic_wm_reports())
-	{
-		if (m_swapchain_dims.width != m_frame->client_width() ||
-			m_swapchain_dims.height != m_frame->client_height())
-		{
-			swapchain_unavailable = true;
-		}
-	}
-
-	if (swapchain_unavailable || should_reinitialize_swapchain)
-	{
-		reinitialize_swapchain();
-	}
-
-	m_profiler.start();
-
-	if (m_current_frame == &m_aux_frame_context)
-	{
-		m_current_frame = &frame_context_storage[m_current_queue_index];
-		if (m_current_frame->swap_command_buffer)
-		{
-			// Its possible this flip request is triggered by overlays and the flip queue is in undefined state
-			frame_context_cleanup(m_current_frame, true);
-		}
-
-		// Swap aux storage and current frame; aux storage should always be ready for use at all times
-		m_current_frame->swap_storage(m_aux_frame_context);
-		m_current_frame->grab_resources(m_aux_frame_context);
-	}
-	else if (m_current_frame->swap_command_buffer)
-	{
-		if (info.stats.draw_calls > 0)
-		{
-			// This can be 'legal' if the window was being resized and no polling happened because of swapchain_unavailable flag
-			LOG_ERROR(RSX, "Possible data corruption on frame context storage detected");
-		}
-
-		// There were no draws and back-to-back flips happened
-		frame_context_cleanup(m_current_frame, true);
-	}
-
-	if (info.skip_frame || swapchain_unavailable)
-	{
-		if (!info.skip_frame)
-		{
-			verify(HERE), swapchain_unavailable;
-
-			// Perform a mini-flip here without invoking present code
-			m_current_frame->swap_command_buffer = m_current_command_buffer;
-			flush_command_queue(true);
-			vk::advance_frame_counter();
-			frame_context_cleanup(m_current_frame, true);
-		}
-
-		m_frame->flip(m_context);
-		rsx::thread::flip(info);
-		return;
-	}
-
-	u32 buffer_width = display_buffers[info.buffer].width;
-	u32 buffer_height = display_buffers[info.buffer].height;
-	u32 buffer_pitch = display_buffers[info.buffer].pitch;
-
-	u32 av_format;
-	const auto avconfig = g_fxo->get<rsx::avconf>();
-
-	if (avconfig->state)
-	{
-		av_format = avconfig->get_compatible_gcm_format();
-		if (!buffer_pitch)
-			buffer_pitch = buffer_width * avconfig->get_bpp();
-
-		buffer_width = std::min(buffer_width, avconfig->resolution_x);
-		buffer_height = std::min(buffer_height, avconfig->resolution_y);
-	}
-	else
-	{
-		av_format = CELL_GCM_TEXTURE_A8R8G8B8;
-		if (!buffer_pitch)
-			buffer_pitch = buffer_width * 4;
-	}
-
-	coordi aspect_ratio;
-
-	sizei csize = m_swapchain_dims;
-	sizei new_size = csize;
-
-	if (!g_cfg.video.stretch_to_display_area)
-	{
-		const double aq = 1. * buffer_width / buffer_height;
-		const double rq = 1. * new_size.width / new_size.height;
-		const double q = aq / rq;
-
-		if (q > 1.0)
-		{
-			new_size.height = static_cast<int>(new_size.height / q);
-			aspect_ratio.y = (csize.height - new_size.height) / 2;
-		}
-		else if (q < 1.0)
-		{
-			new_size.width = static_cast<int>(new_size.width * q);
-			aspect_ratio.x = (csize.width - new_size.width) / 2;
-		}
-	}
-
-	aspect_ratio.size = new_size;
-
-	//Prepare surface for new frame. Set no timeout here so that we wait for the next image if need be
-	verify(HERE), m_current_frame->present_image == UINT32_MAX;
-	verify(HERE), m_current_frame->swap_command_buffer == nullptr;
-
-	u64 timeout = m_swapchain->get_swap_image_count() <= VK_MAX_ASYNC_FRAMES? 0ull: 100000000ull;
-	while (VkResult status = m_swapchain->acquire_next_swapchain_image(m_current_frame->acquire_signal_semaphore, timeout, &m_current_frame->present_image))
-	{
-		switch (status)
-		{
-		case VK_TIMEOUT:
-		case VK_NOT_READY:
-		{
-			//In some cases, after a fullscreen switch, the driver only allows N-1 images to be acquirable, where N = number of available swap images.
-			//This means that any acquired images have to be released
-			//before acquireNextImage can return successfully. This is despite the driver reporting 2 swap chain images available
-			//This makes fullscreen performance slower than windowed performance as throughput is lowered due to losing one presentable image
-			//Found on AMD Crimson 17.7.2
-
-
-			//Whatever returned from status, this is now a spin
-			timeout = 0ull;
-			check_present_status();
-			continue;
-		}
-		case VK_SUBOPTIMAL_KHR:
-			should_reinitialize_swapchain = true;
-			break;
-		case VK_ERROR_OUT_OF_DATE_KHR:
-			LOG_WARNING(RSX, "vkAcquireNextImageKHR failed with VK_ERROR_OUT_OF_DATE_KHR. Flip request ignored until surface is recreated.");
-			swapchain_unavailable = true;
-			reinitialize_swapchain();
-			continue;
-		default:
-			vk::die_with_error(HERE, status);
-		}
-	}
-
-	//Confirm that the driver did not silently fail
-	verify(HERE), m_current_frame->present_image != UINT32_MAX;
-
-	//Blit contents to screen..
-	vk::image* image_to_flip = nullptr;
-
-	if (info.buffer < display_buffers_count && buffer_width && buffer_height)
-	{
-		const u32 absolute_address = rsx::get_address(display_buffers[info.buffer].offset, CELL_GCM_LOCATION_LOCAL);
-
-		if (auto render_target_texture = m_rtts.get_color_surface_at(absolute_address))
-		{
-			if (render_target_texture->last_use_tag == m_rtts.write_tag)
-			{
-				image_to_flip = render_target_texture;
-			}
-			else
-			{
-				const auto overlap_info = m_rtts.get_merged_texture_memory_region(*m_current_command_buffer, absolute_address, buffer_width, buffer_height, buffer_pitch, render_target_texture->get_bpp(), rsx::surface_access::read);
-				if (!overlap_info.empty() && overlap_info.back().surface == render_target_texture)
-				{
-					// Confirmed to be the newest data source in that range
-					image_to_flip = render_target_texture;
-				}
-			}
-
-			if (image_to_flip)
-			{
-				buffer_width = rsx::apply_resolution_scale(buffer_width, true);
-				buffer_height = rsx::apply_resolution_scale(buffer_height, true);
-
-				if (buffer_width > render_target_texture->width() ||
-					buffer_height > render_target_texture->height())
-				{
-					// TODO: Should emit only once to avoid flooding the log file
-					// TODO: Take AA scaling into account
-					LOG_WARNING(RSX, "Selected output image does not satisfy the video configuration. Display buffer resolution=%dx%d, avconf resolution=%dx%d, surface=%dx%d",
-						display_buffers[info.buffer].width, display_buffers[info.buffer].height, avconfig->state * avconfig->resolution_x, avconfig->state * avconfig->resolution_y,
-						render_target_texture->get_surface_width(rsx::surface_metrics::pixels), render_target_texture->get_surface_height(rsx::surface_metrics::pixels));
-
-					buffer_width = render_target_texture->width();
-					buffer_height = render_target_texture->height();
-				}
-			}
-		}
-		else if (auto surface = m_texture_cache.find_texture_from_dimensions<true>(absolute_address, av_format, buffer_width, buffer_height))
-		{
-			//Hack - this should be the first location to check for output
-			//The render might have been done offscreen or in software and a blit used to display
-			image_to_flip = surface->get_raw_texture();
-		}
-
-		if (!image_to_flip)
-		{
-			// Read from cell
-			const auto range = utils::address_range::start_length(absolute_address, buffer_pitch * buffer_height);
-			const u32  lookup_mask = rsx::texture_upload_context::blit_engine_dst | rsx::texture_upload_context::framebuffer_storage;
-			const auto overlap = m_texture_cache.find_texture_from_range<true>(range, 0, lookup_mask);
-
-			for (const auto & section : overlap)
-			{
-				if (!section->is_synchronized())
-				{
-					section->copy_texture(*m_current_command_buffer, true);
-				}
-			}
-
-			if (m_current_command_buffer->flags & vk::command_buffer::cb_has_dma_transfer)
-			{
-				// Submit for processing to lower hard fault penalty
-				flush_command_queue();
-			}
-
-			m_texture_cache.invalidate_range(*m_current_command_buffer, range, rsx::invalidation_cause::read);
-			image_to_flip = m_texture_cache.upload_image_simple(*m_current_command_buffer, absolute_address, buffer_width, buffer_height);
-		}
-	}
-
-	VkImage target_image = m_swapchain->get_image(m_current_frame->present_image);
-	const auto present_layout = m_swapchain->get_optimal_present_layout();
-
-	const VkImageSubresourceRange subresource_range = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-	VkImageLayout target_layout = present_layout;
-
-	VkRenderPass single_target_pass = VK_NULL_HANDLE;
-	vk::framebuffer_holder* direct_fbo = nullptr;
-	vk::viewable_image* calibration_src = nullptr;
-
-	if (image_to_flip)
-	{
-		if (aspect_ratio.x || aspect_ratio.y)
-		{
-			VkClearColorValue clear_black {};
-			vk::change_image_layout(*m_current_command_buffer, target_image, present_layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, subresource_range);
-			vkCmdClearColorImage(*m_current_command_buffer, target_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_black, 1, &subresource_range);
-
-			target_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-		}
-
-		if (UNLIKELY(!g_cfg.video.full_rgb_range_output || !rsx::fcmp(avconfig->gamma, 1.f)))
-		{
-			calibration_src = dynamic_cast<vk::viewable_image*>(image_to_flip);
-			verify("Image handle not viewable!" HERE), calibration_src;
-		}
-
-		if (LIKELY(!calibration_src))
-		{
-			vk::copy_scaled_image(*m_current_command_buffer, image_to_flip->value, target_image, image_to_flip->current_layout, target_layout,
-				{ 0, 0, static_cast<s32>(buffer_width), static_cast<s32>(buffer_height) }, aspect_ratio, 1, VK_IMAGE_ASPECT_COLOR_BIT, false);
-		}
-		else
-		{
-			vk::change_image_layout(*m_current_command_buffer, target_image, target_layout, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, subresource_range);
-			target_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-			const auto key = vk::get_renderpass_key(m_swapchain->get_surface_format());
-			single_target_pass = vk::get_renderpass(*m_device, key);
-			verify("Usupported renderpass configuration" HERE), single_target_pass != VK_NULL_HANDLE;
-
-			direct_fbo = vk::get_framebuffer(*m_device, m_swapchain_dims.width, m_swapchain_dims.height, single_target_pass, m_swapchain->get_surface_format(), target_image);
-			direct_fbo->add_ref();
-
-			image_to_flip->push_layout(*m_current_command_buffer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-			m_video_output_pass->run(*m_current_command_buffer, areau(aspect_ratio), direct_fbo, calibration_src, avconfig->gamma, !g_cfg.video.full_rgb_range_output, single_target_pass);
-			image_to_flip->pop_layout(*m_current_command_buffer);
-
-			direct_fbo->release();
-		}
-	}
-	else
-	{
-		//No draw call was issued!
-		//TODO: Upload raw bytes from cpu for rendering
-		VkClearColorValue clear_black {};
-		vk::change_image_layout(*m_current_command_buffer, target_image, present_layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, subresource_range);
-		vkCmdClearColorImage(*m_current_command_buffer, target_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_black, 1, &subresource_range);
-
-		target_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-	}
-
-	if (m_frame->screenshot_toggle == true)
-	{
-		m_frame->screenshot_toggle = false;
-
-		const size_t sshot_size = buffer_height * buffer_width * 4;
-
-		vk::buffer sshot_vkbuf(*m_device, align(sshot_size, 0x100000), m_device->get_memory_mapping().host_visible_coherent, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-		    VK_BUFFER_USAGE_TRANSFER_DST_BIT, 0);
-
-		VkBufferImageCopy copy_info;
-		copy_info.bufferOffset                    = 0;
-		copy_info.bufferRowLength                 = 0;
-		copy_info.bufferImageHeight               = 0;
-		copy_info.imageSubresource.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
-		copy_info.imageSubresource.baseArrayLayer = 0;
-		copy_info.imageSubresource.layerCount     = 1;
-		copy_info.imageSubresource.mipLevel       = 0;
-		copy_info.imageOffset.x                   = 0;
-		copy_info.imageOffset.y                   = 0;
-		copy_info.imageOffset.z                   = 0;
-		copy_info.imageExtent.width               = buffer_width;
-		copy_info.imageExtent.height              = buffer_height;
-		copy_info.imageExtent.depth               = 1;
-
-		image_to_flip->push_layout(*m_current_command_buffer, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-		vk::copy_image_to_buffer(*m_current_command_buffer, image_to_flip, &sshot_vkbuf, copy_info);
-		image_to_flip->pop_layout(*m_current_command_buffer);
-
-		flush_command_queue(true);
-		auto src = sshot_vkbuf.map(0, sshot_size);
-		std::vector<u8> sshot_frame(sshot_size);
-		memcpy(sshot_frame.data(), src, sshot_size);
-		sshot_vkbuf.unmap();
-
-		m_frame->take_screenshot(std::move(sshot_frame), buffer_width, buffer_height);
-	}
-
-	const bool has_overlay = (m_overlay_manager && m_overlay_manager->has_visible());
-	if (g_cfg.video.overlay || has_overlay)
-	{
-		if (target_layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
-		{
-			// Change the image layout whilst setting up a dependency on waiting for the blit op to finish before we start writing
-			VkImageMemoryBarrier barrier = {};
-			barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-			barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-			barrier.oldLayout = target_layout;
-			barrier.image = target_image;
-			barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-			barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			barrier.subresourceRange = subresource_range;
-			vkCmdPipelineBarrier(*m_current_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_DEPENDENCY_BY_REGION_BIT, 0, nullptr, 0, nullptr, 1, &barrier);
-
-			target_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-		}
-
-		if (!direct_fbo)
-		{
-			const auto key = vk::get_renderpass_key(m_swapchain->get_surface_format());
-			single_target_pass = vk::get_renderpass(*m_device, key);
-			verify("Usupported renderpass configuration" HERE), single_target_pass != VK_NULL_HANDLE;
-
-			direct_fbo = vk::get_framebuffer(*m_device, m_swapchain_dims.width, m_swapchain_dims.height, single_target_pass, m_swapchain->get_surface_format(), target_image);
-		}
-
-		direct_fbo->add_ref();
-
-		if (has_overlay)
-		{
-			// Lock to avoid modification during run-update chain
-			std::lock_guard lock(*m_overlay_manager);
-
-			for (const auto& view : m_overlay_manager->get_views())
-			{
-				m_ui_renderer->run(*m_current_command_buffer, areau(aspect_ratio), direct_fbo, single_target_pass, m_texture_upload_buffer_ring_info, *view.get());
-			}
-		}
-
-		if (g_cfg.video.overlay)
-		{
-			m_text_writer->print_text(*m_current_command_buffer, *direct_fbo, 0,   0, direct_fbo->width(), direct_fbo->height(), fmt::format("RSX Load:                 %3d%%", get_load()));
-			m_text_writer->print_text(*m_current_command_buffer, *direct_fbo, 0,  18, direct_fbo->width(), direct_fbo->height(), fmt::format("draw calls: %17d", info.stats.draw_calls));
-			m_text_writer->print_text(*m_current_command_buffer, *direct_fbo, 0,  36, direct_fbo->width(), direct_fbo->height(), fmt::format("draw call setup: %12dus", info.stats.setup_time));
-			m_text_writer->print_text(*m_current_command_buffer, *direct_fbo, 0,  54, direct_fbo->width(), direct_fbo->height(), fmt::format("vertex upload time: %9dus", info.stats.vertex_upload_time));
-			m_text_writer->print_text(*m_current_command_buffer, *direct_fbo, 0,  72, direct_fbo->width(), direct_fbo->height(), fmt::format("texture upload time: %8dus", info.stats.textures_upload_time));
-			m_text_writer->print_text(*m_current_command_buffer, *direct_fbo, 0,  90, direct_fbo->width(), direct_fbo->height(), fmt::format("draw call execution: %8dus", info.stats.draw_exec_time));
-			m_text_writer->print_text(*m_current_command_buffer, *direct_fbo, 0, 108, direct_fbo->width(), direct_fbo->height(), fmt::format("submit and flip: %12dus", info.stats.flip_time));
-
-			const auto num_dirty_textures = m_texture_cache.get_unreleased_textures_count();
-			const auto texture_memory_size = m_texture_cache.get_texture_memory_in_use() / (1024 * 1024);
-			const auto tmp_texture_memory_size = m_texture_cache.get_temporary_memory_in_use() / (1024 * 1024);
-			const auto num_flushes = m_texture_cache.get_num_flush_requests();
-			const auto num_mispredict = m_texture_cache.get_num_cache_mispredictions();
-			const auto num_speculate = m_texture_cache.get_num_cache_speculative_writes();
-			const auto num_misses = m_texture_cache.get_num_cache_misses();
-			const auto num_unavoidable = m_texture_cache.get_num_unavoidable_hard_faults();
-			const auto cache_miss_ratio = static_cast<u32>(ceil(m_texture_cache.get_cache_miss_ratio() * 100));
-			m_text_writer->print_text(*m_current_command_buffer, *direct_fbo, 0, 144, direct_fbo->width(), direct_fbo->height(), fmt::format("Unreleased textures: %8d", num_dirty_textures));
-			m_text_writer->print_text(*m_current_command_buffer, *direct_fbo, 0, 162, direct_fbo->width(), direct_fbo->height(), fmt::format("Texture cache memory: %7dM", texture_memory_size));
-			m_text_writer->print_text(*m_current_command_buffer, *direct_fbo, 0, 180, direct_fbo->width(), direct_fbo->height(), fmt::format("Temporary texture memory: %3dM", tmp_texture_memory_size));
-			m_text_writer->print_text(*m_current_command_buffer, *direct_fbo, 0, 198, direct_fbo->width(), direct_fbo->height(), fmt::format("Flush requests: %13d  = %2d (%3d%%) hard faults, %2d unavoidable, %2d misprediction(s), %2d speculation(s)", num_flushes, num_misses, cache_miss_ratio, num_unavoidable, num_mispredict, num_speculate));
-		}
-
-		direct_fbo->release();
-	}
-
-	if (target_layout != present_layout)
-	{
-		vk::change_image_layout(*m_current_command_buffer, target_image, target_layout, present_layout, subresource_range);
-	}
-
-	queue_swap_request();
-
-	m_frame_stats.flip_time = m_profiler.duration();
-
-	m_frame->flip(m_context);
-	rsx::thread::flip(info);
 }
 
 void VKGSRender::renderctl(u32 request_code, void* args)
@@ -3735,7 +2147,7 @@ void VKGSRender::get_occlusion_query_result(rsx::reports::occlusion_query_info* 
 				m_flush_requests.clear_pending_flag();
 			}
 
-			LOG_ERROR(RSX, "[Performance warning] Unexpected ZCULL read caused a hard sync");
+			rsx_log.error("[Performance warning] Unexpected ZCULL read caused a hard sync");
 			busy_wait();
 		}
 
@@ -3866,7 +2278,7 @@ void VKGSRender::begin_conditional_rendering(const std::vector<rsx::reports::occ
 	size_t first = 0;
 	size_t last;
 
-	if (LIKELY(!partial_eval))
+	if (!partial_eval) [[likely]]
 	{
 		last = sources.size();
 	}
@@ -3912,7 +2324,7 @@ void VKGSRender::begin_conditional_rendering(const std::vector<rsx::reports::occ
 	}
 	else
 	{
-		LOG_ERROR(RSX, "Dubious query data pushed to cond render!, Please report to developers(q.pending=%d)", sources.front()->pending);
+		rsx_log.error("Dubious query data pushed to cond render!, Please report to developers(q.pending=%d)", sources.front()->pending);
 	}
 
 	rsx::thread::begin_conditional_rendering(sources);

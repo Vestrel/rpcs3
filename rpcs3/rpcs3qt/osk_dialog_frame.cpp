@@ -1,5 +1,5 @@
-﻿
-#include "osk_dialog_frame.h"
+﻿#include "osk_dialog_frame.h"
+#include "custom_dialog.h"
 #include "Emu/Cell/Modules/cellMsgDialog.h"
 
 #include <QLabel>
@@ -24,7 +24,7 @@ osk_dialog_frame::~osk_dialog_frame()
 	}
 }
 
-void osk_dialog_frame::Create(const std::string& title, const std::u16string& message, char16_t* init_text, u32 charlimit, u32 options)
+void osk_dialog_frame::Create(const std::string& title, const std::u16string& message, char16_t* init_text, u32 charlimit, u32 prohibit_flags, u32 /*panel_flag*/, u32 /*first_view_panel*/)
 {
 	state = OskDialogState::Open;
 
@@ -64,7 +64,7 @@ void osk_dialog_frame::Create(const std::string& title, const std::u16string& me
 	inputLayout->setAlignment(Qt::AlignHCenter);
 
 	// Text Input
-	if (options & CELL_OSKDIALOG_NO_RETURN)
+	if (prohibit_flags & CELL_OSKDIALOG_NO_RETURN)
 	{
 		QLineEdit* input = new QLineEdit(m_dialog);
 		input->setFixedWidth(lineEditWidth());
@@ -72,12 +72,12 @@ void osk_dialog_frame::Create(const std::string& title, const std::u16string& me
 		input->setText(text);
 		input->setFocus();
 
-		if (options & CELL_OSKDIALOG_NO_SPACE)
+		if (prohibit_flags & CELL_OSKDIALOG_NO_SPACE)
 		{
 			input->setValidator(new QRegExpValidator(QRegExp("^\\S*$"), this));
 		}
 
-		connect(input, &QLineEdit::textChanged, [=](const QString& text)
+		connect(input, &QLineEdit::textChanged, [=, this](const QString& text)
 		{
 			inputCount->setText(QString("%1/%2").arg(text.length()).arg(charlimit));
 			SetOskText(text);
@@ -96,7 +96,7 @@ void osk_dialog_frame::Create(const std::string& title, const std::u16string& me
 		input->moveCursor(QTextCursor::End);
 		m_text_old = text;
 
-		connect(input, &QTextEdit::textChanged, [=]()
+		connect(input, &QTextEdit::textChanged, [=, this]()
 		{
 			QString text = input->toPlainText();
 
@@ -123,7 +123,7 @@ void osk_dialog_frame::Create(const std::string& title, const std::u16string& me
 			int cursor_pos = cursor.position();
 
 			// Clear text of spaces if necessary
-			if (options & CELL_OSKDIALOG_NO_SPACE)
+			if (prohibit_flags & CELL_OSKDIALOG_NO_SPACE)
 			{
 				int trim_len = text.length();
 				text.remove(QRegExp("\\s+"));
@@ -163,12 +163,12 @@ void osk_dialog_frame::Create(const std::string& title, const std::u16string& me
 	// Events
 	connect(button_ok, &QAbstractButton::clicked, m_dialog, &QDialog::accept);
 
-	connect(m_dialog, &QDialog::accepted, [=]
+	connect(m_dialog, &QDialog::accepted, [this]()
 	{
 		on_osk_close(CELL_MSGDIALOG_BUTTON_OK);
 	});
 
-	connect(m_dialog, &QDialog::rejected, [=]
+	connect(m_dialog, &QDialog::rejected, [this]()
 	{
 		on_osk_close(CELL_MSGDIALOG_BUTTON_ESCAPE);
 	});

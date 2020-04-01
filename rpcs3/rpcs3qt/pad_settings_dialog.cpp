@@ -9,7 +9,9 @@
 
 #include "qt_utils.h"
 #include "pad_settings_dialog.h"
+#include "pad_led_settings_dialog.h"
 #include "ui_pad_settings_dialog.h"
+#include "tooltips.h"
 
 #include "Emu/Io/Null/NullPadHandler.h"
 
@@ -24,6 +26,8 @@
 #include "Input/evdev_joystick_handler.h"
 #endif
 
+LOG_CHANNEL(cfg_log, "CFG");
+
 inline std::string sstr(const QString& _in) { return _in.toStdString(); }
 constexpr auto qstr = QString::fromStdString;
 
@@ -31,7 +35,7 @@ inline bool CreateConfigFile(const QString& dir, const QString& name)
 {
 	if (!QDir().mkpath(dir))
 	{
-		LOG_ERROR(GENERAL, "Failed to create dir %s", sstr(dir));
+		cfg_log.error("Failed to create dir %s", sstr(dir));
 		return false;
 	}
 
@@ -40,7 +44,7 @@ inline bool CreateConfigFile(const QString& dir, const QString& name)
 
 	if (!new_file.open(QIODevice::WriteOnly))
 	{
-		LOG_ERROR(GENERAL, "Failed to create file %s", sstr(filename));
+		cfg_log.error("Failed to create file %s", sstr(filename));
 		return false;
 	}
 
@@ -60,21 +64,13 @@ pad_settings_dialog::pad_settings_dialog(QWidget *parent, const GameInfo *game)
 	{
 		m_title_id = game->serial;
 		g_cfg_input.load(game->serial);
-		setWindowTitle(tr("Gamepads Settings: [%0] %1").arg(qstr(game->serial)).arg(qstr(game->name).simplified()));
+		setWindowTitle(tr("Gamepad Settings: [%0] %1").arg(qstr(game->serial)).arg(qstr(game->name).simplified()));
 	}
 	else
 	{
 		g_cfg_input.load();
-		setWindowTitle(tr("Gamepads Settings"));
+		setWindowTitle(tr("Gamepad Settings"));
 	}
-
-	// Load tooltips
-	QFile json_file(":/Json/pad_settings.json");
-	json_file.open(QIODevice::ReadOnly | QIODevice::Text);
-	QJsonObject json_obj = QJsonDocument::fromJson(json_file.readAll()).object();
-	json_file.close();
-
-	m_json_handlers = json_obj.value("handlers").toObject();
 
 	// Create tab widget for 7 players
 	m_tabs = new QTabWidget;
@@ -114,7 +110,7 @@ pad_settings_dialog::pad_settings_dialog(QWidget *parent, const GameInfo *game)
 		if (!g_cfg_input.player[m_tabs->currentIndex()]->device.from_string(m_device_name))
 		{
 			// Something went wrong
-			LOG_ERROR(GENERAL, "Failed to convert device string: %s", m_device_name);
+			cfg_log.error("Failed to convert device string: %s", m_device_name);
 			return;
 		}
 	});
@@ -130,14 +126,14 @@ pad_settings_dialog::pad_settings_dialog(QWidget *parent, const GameInfo *game)
 		if (!g_cfg_input.player[m_tabs->currentIndex()]->profile.from_string(m_profile))
 		{
 			// Something went wrong
-			LOG_ERROR(GENERAL, "Failed to convert profile string: %s", m_profile);
+			cfg_log.error("Failed to convert profile string: %s", m_profile);
 			return;
 		}
 		ChangeProfile();
 	});
 
 	// Pushbutton: Add Profile
-	connect(ui->b_addProfile, &QAbstractButton::clicked, [=]
+	connect(ui->b_addProfile, &QAbstractButton::clicked, [this]()
 	{
 		const int i = m_tabs->currentIndex();
 
@@ -257,7 +253,6 @@ void pad_settings_dialog::InitButtons()
 	insertButton(button_ids::id_pad_rstick_right, ui->b_rstick_right);
 	insertButton(button_ids::id_pad_rstick_up, ui->b_rstick_up);
 
-	m_padButtons->addButton(ui->b_led, button_ids::id_led);
 	m_padButtons->addButton(ui->b_reset, button_ids::id_reset_parameters);
 	m_padButtons->addButton(ui->b_blacklist, button_ids::id_blacklist);
 	m_padButtons->addButton(ui->b_refresh, button_ids::id_refresh);
@@ -336,26 +331,19 @@ void pad_settings_dialog::InitButtons()
 		RepaintPreviewLabel(ui->preview_stick_right, value, ui->slider_stick_right->size().width(), rx, ry);
 	});
 
-	connect(ui->b_led, &QPushButton::clicked, [=]()
+	// Open LED settings
+	connect(ui->b_led_settings, &QPushButton::clicked, [this]()
 	{
-		QColor led_color(m_handler_cfg.colorR, m_handler_cfg.colorG, m_handler_cfg.colorB);
-		if (ui->b_led->property("led").canConvert<QColor>())
-		{
-			led_color = ui->b_led->property("led").value<QColor>();
-		}
-		QColorDialog dlg(led_color, this);
-		dlg.setWindowTitle(tr("LED Color"));
-		if (dlg.exec() == QColorDialog::Accepted)
-		{
-			const QColor newColor = dlg.selectedColor();
-			m_handler->SetPadData(m_device_name, 0, 0, newColor.red(), newColor.green(), newColor.blue());
-			ui->b_led->setIcon(gui::utils::get_colorized_icon(QIcon(":/Icons/controllers.png"), Qt::black, newColor));
-			ui->b_led->setProperty("led", newColor);
-		}
+		// Allow LED battery indication while the dialog is open
+		m_handler->SetPadData(m_device_name, 0, 0, m_handler_cfg.colorR, m_handler_cfg.colorG, m_handler_cfg.colorB, static_cast<bool>(m_handler_cfg.led_battery_indicator), m_handler_cfg.led_battery_indicator_brightness);
+		pad_led_settings_dialog dialog(m_handler_cfg.colorR, m_handler_cfg.colorG, m_handler_cfg.colorB, static_cast<bool>(m_handler_cfg.led_low_battery_blink), static_cast<bool>(m_handler_cfg.led_battery_indicator), m_handler_cfg.led_battery_indicator_brightness, this);
+		connect(&dialog, &pad_led_settings_dialog::pass_led_settings, this, &pad_settings_dialog::apply_led_settings);
+		dialog.exec();
+		m_handler->SetPadData(m_device_name, 0, 0, m_handler_cfg.colorR, m_handler_cfg.colorG, m_handler_cfg.colorB, false, m_handler_cfg.led_battery_indicator_brightness);
 	});
 
 	// Enable Button Remapping
-	const auto& callback = [=](u16 val, std::string name, std::string pad_name, std::array<int, 6> preview_values)
+	const auto& callback = [this](u16 val, std::string name, std::string pad_name, u32 battery_level, pad_preview_values preview_values)
 	{
 		SwitchPadInfo(pad_name, true);
 
@@ -363,6 +351,7 @@ void pad_settings_dialog::InitButtons()
 		{
 			SwitchButtons(true);
 		}
+
 		if (m_handler->has_deadzones())
 		{
 			ui->preview_trigger_left->setValue(preview_values[0]);
@@ -380,12 +369,17 @@ void pad_settings_dialog::InitButtons()
 			}
 		}
 
+		if (m_enable_battery)
+		{
+			ui->pb_battery->setValue(battery_level);
+		}
+
 		if (val <= 0)
 		{
 			return;
 		}
 
-		LOG_NOTICE(HLE, "get_next_button_press: %s device %s button %s pressed with value %d", m_handler->m_type, pad_name, name, val);
+		cfg_log.notice("get_next_button_press: %s device %s button %s pressed with value %d", m_handler->m_type, pad_name, name, val);
 		if (m_button_id > button_ids::id_pad_begin && m_button_id < button_ids::id_pad_end)
 		{
 			m_cfg_entries[m_button_id].key  = name;
@@ -401,6 +395,10 @@ void pad_settings_dialog::InitButtons()
 		if (m_enable_buttons)
 		{
 			SwitchButtons(false);
+		}
+		if (m_enable_battery)
+		{
+			ui->pb_battery->setValue(0);
 		}
 	};
 
@@ -424,11 +422,13 @@ void pad_settings_dialog::InitButtons()
 		{
 			if (!ui->chooseDevice->itemData(i).canConvert<pad_device_info>())
 			{
-				LOG_FATAL(GENERAL, "Cannot convert itemData for index %d and itemText %s", i, sstr(ui->chooseDevice->itemText(i)));
+				cfg_log.fatal("Cannot convert itemData for index %d and itemText %s", i, sstr(ui->chooseDevice->itemText(i)));
 				continue;
 			}
 			const pad_device_info info = ui->chooseDevice->itemData(i).value<pad_device_info>();
-			m_handler->get_next_button_press(info.name, [=](u16, std::string, std::string pad_name, std::array<int, 6>) { SwitchPadInfo(pad_name, true); }, [=](std::string pad_name) { SwitchPadInfo(pad_name, false); }, false);
+			m_handler->get_next_button_press(info.name,
+				[this](u16, std::string, std::string pad_name, u32, pad_preview_values) { SwitchPadInfo(pad_name, true); },
+				[this](std::string pad_name) { SwitchPadInfo(pad_name, false); }, false);
 		}
 	});
 }
@@ -436,11 +436,19 @@ void pad_settings_dialog::InitButtons()
 void pad_settings_dialog::SetPadData(u32 large_motor, u32 small_motor)
 {
 	QColor led_color(m_handler_cfg.colorR, m_handler_cfg.colorG, m_handler_cfg.colorB);
-	if (ui->b_led->property("led").canConvert<QColor>())
-	{
-		led_color = ui->b_led->property("led").value<QColor>();
-	}
-	m_handler->SetPadData(m_device_name, large_motor, small_motor, led_color.red(), led_color.green(), led_color.blue());
+	m_handler->SetPadData(m_device_name, large_motor, small_motor, led_color.red(), led_color.green(), led_color.blue(), static_cast<bool>(m_handler_cfg.led_battery_indicator), m_handler_cfg.led_battery_indicator_brightness);
+}
+
+// Slot to handle the data from a signal in the led settings dialog
+void pad_settings_dialog::apply_led_settings(int colorR, int colorG, int colorB, bool led_low_battery_blink, bool led_battery_indicator, int led_battery_indicator_brightness)
+{
+	m_handler_cfg.colorR.set(colorR);
+	m_handler_cfg.colorG.set(colorG);
+	m_handler_cfg.colorB.set(colorB);
+	m_handler_cfg.led_battery_indicator.set(led_battery_indicator);
+	m_handler_cfg.led_battery_indicator_brightness.set(led_battery_indicator_brightness);
+	m_handler_cfg.led_low_battery_blink.set(led_low_battery_blink);
+	m_handler->SetPadData(m_device_name, 0, 0, colorR, colorG, colorB, led_battery_indicator, led_battery_indicator_brightness);
 }
 
 void pad_settings_dialog::SwitchPadInfo(const std::string& pad_name, bool is_connected)
@@ -570,14 +578,13 @@ void pad_settings_dialog::ReloadButtons()
 	RepaintPreviewLabel(ui->preview_stick_left, ui->slider_stick_left->value(), ui->slider_stick_left->size().width(), lx, ly);
 	RepaintPreviewLabel(ui->preview_stick_right, ui->slider_stick_right->value(), ui->slider_stick_right->size().width(), rx, ry);
 
-	// Enable and repaint the LED Button
+	// Apply stored/default LED settings to the device
 	m_enable_led = m_handler->has_led();
-	m_handler->SetPadData(m_device_name, 0, 0, m_handler_cfg.colorR, m_handler_cfg.colorG, m_handler_cfg.colorB);
+	m_handler->SetPadData(m_device_name, 0, 0, m_handler_cfg.colorR, m_handler_cfg.colorG, m_handler_cfg.colorB, false, m_handler_cfg.led_battery_indicator_brightness);
 
-	const QColor led_color(m_handler_cfg.colorR, m_handler_cfg.colorG, m_handler_cfg.colorB);
-	ui->b_led->setIcon(gui::utils::get_colorized_icon(QIcon(":/Icons/controllers.png"), Qt::black, led_color));
-	ui->b_led->setProperty("led", led_color);
-	ui->gb_led->setVisible(m_enable_led);
+	// Enable battery and LED group box
+	m_enable_battery = m_handler->has_battery();
+	ui->gb_battery->setVisible(m_enable_battery || m_enable_led);
 }
 
 void pad_settings_dialog::ReactivateButtons()
@@ -613,33 +620,43 @@ void pad_settings_dialog::ReactivateButtons()
 	ui->chooseClass->setFocusPolicy(Qt::WheelFocus);
 }
 
-void pad_settings_dialog::RepaintPreviewLabel(QLabel* l, int dz, int w, int x, int y)
+void pad_settings_dialog::RepaintPreviewLabel(QLabel* l, int deadzone, int desired_width, int x, int y)
 {
-	int max = m_handler->thumb_max;
-	int origin = w * 0.1;
-	int width = w * 0.8;
-	int dz_width = width * dz / max;
-	int dz_origin = (w - dz_width) / 2;
+	const int deadzone_max = m_handler->thumb_max;
+	const qreal device_pixel_ratio = devicePixelRatioF();
+	const qreal scaled_width = desired_width * device_pixel_ratio;
+	const qreal origin = desired_width / 2.0;
+	const qreal relative_size = 0.8;
+	const qreal outer_circle_diameter = relative_size * desired_width;
+	const qreal inner_circle_diameter = outer_circle_diameter * deadzone / deadzone_max;
+	const qreal outer_circle_radius = outer_circle_diameter / 2.0;
+	const qreal stick_x = outer_circle_radius * x / deadzone_max;
+	const qreal stick_y = outer_circle_radius * -y / deadzone_max;
 
-	x = (w + (x * width / max)) / 2;
-	y = (w + (y * -1 * width / max)) / 2;
+	// Set up the canvas for our work of art
+	QPixmap pixmap(scaled_width, scaled_width);
+	pixmap.setDevicePixelRatio(device_pixel_ratio);
+	pixmap.fill(Qt::transparent);
 
-	QPixmap pm(w, w);
-	pm.fill(Qt::transparent);
-	QPainter p(&pm);
-	p.setRenderHint(QPainter::Antialiasing, true);
-	QPen pen(Qt::black, 2);
-	p.setPen(pen);
-	QBrush brush(Qt::white);
-	p.setBrush(brush);
-	p.drawEllipse(origin, origin, width, width);
-	pen = QPen(Qt::red, 2);
-	p.setPen(pen);
-	p.drawEllipse(dz_origin, dz_origin, dz_width, dz_width);
-	pen = QPen(Qt::blue, 2);
-	p.setPen(pen);
-	p.drawEllipse(x, y, 1, 1);
-	l->setPixmap(pm);
+	// Configure the painter and set its origin
+	QPainter painter(&pixmap);
+	painter.setRenderHint(QPainter::Antialiasing, true);
+	painter.translate(origin, origin);
+	painter.setBrush(QBrush(Qt::white));
+
+	// Draw a black outer circle that represents the maximum for the deadzone
+	painter.setPen(QPen(Qt::black, 2));
+	painter.drawEllipse(QRectF(-outer_circle_diameter / 2.0, -outer_circle_diameter / 2.0, outer_circle_diameter, outer_circle_diameter));
+
+	// Draw a red inner circle that represents the current deadzone
+	painter.setPen(QPen(Qt::red, 2));
+	painter.drawEllipse(QRectF(-inner_circle_diameter / 2.0, -inner_circle_diameter / 2.0, inner_circle_diameter, inner_circle_diameter));
+
+	// Draw a blue dot that represents the current stick orientation
+	painter.setPen(QPen(Qt::blue, 2));
+	painter.drawEllipse(QRectF(stick_x, stick_y, 1, 1));
+
+	l->setPixmap(pixmap);
 }
 
 void pad_settings_dialog::keyPressEvent(QKeyEvent *keyEvent)
@@ -656,7 +673,7 @@ void pad_settings_dialog::keyPressEvent(QKeyEvent *keyEvent)
 
 	if (m_button_id <= button_ids::id_pad_begin || m_button_id >= button_ids::id_pad_end)
 	{
-		LOG_NOTICE(HLE, "Pad Settings: Handler Type: %d, Unknown button ID: %d", static_cast<int>(m_handler->m_type), m_button_id);
+		cfg_log.notice("Pad Settings: Handler Type: %d, Unknown button ID: %d", static_cast<int>(m_handler->m_type), m_button_id);
 	}
 	else
 	{
@@ -681,7 +698,7 @@ void pad_settings_dialog::mouseReleaseEvent(QMouseEvent* event)
 
 	if (m_button_id <= button_ids::id_pad_begin || m_button_id >= button_ids::id_pad_end)
 	{
-		LOG_NOTICE(HLE, "Pad Settings: Handler Type: %d, Unknown button ID: %d", static_cast<int>(m_handler->m_type), m_button_id);
+		cfg_log.notice("Pad Settings: Handler Type: %d, Unknown button ID: %d", static_cast<int>(m_handler->m_type), m_button_id);
 	}
 	else
 	{
@@ -706,7 +723,7 @@ void pad_settings_dialog::wheelEvent(QWheelEvent *event)
 
 	if (m_button_id <= button_ids::id_pad_begin || m_button_id >= button_ids::id_pad_end)
 	{
-		LOG_NOTICE(HLE, "Pad Settings: Handler Type: %d, Unknown button ID: %d", static_cast<int>(m_handler->m_type), m_button_id);
+		cfg_log.notice("Pad Settings: Handler Type: %d, Unknown button ID: %d", static_cast<int>(m_handler->m_type), m_button_id);
 		return;
 	}
 
@@ -730,8 +747,9 @@ void pad_settings_dialog::wheelEvent(QWheelEvent *event)
 			key = mouse::wheel_right;
 		}
 	}
-	if (const int y = direction.y())
+	else
 	{
+		const int y = direction.y();
 		bool to_up = event->inverted() ? y < 0 : y > 0;
 		if (to_up)
 		{
@@ -761,7 +779,7 @@ void pad_settings_dialog::mouseMoveEvent(QMouseEvent* /*event*/)
 
 	if (m_button_id <= button_ids::id_pad_begin || m_button_id >= button_ids::id_pad_end)
 	{
-		LOG_NOTICE(HLE, "Pad Settings: Handler Type: %d, Unknown button ID: %d", static_cast<int>(m_handler->m_type), m_button_id);
+		cfg_log.notice("Pad Settings: Handler Type: %d, Unknown button ID: %d", static_cast<int>(m_handler->m_type), m_button_id);
 	}
 	else
 	{
@@ -832,10 +850,7 @@ void pad_settings_dialog::UpdateLabel(bool is_reset)
 
 		if (m_handler->has_led())
 		{
-			const QColor led_color(m_handler_cfg.colorR, m_handler_cfg.colorG, m_handler_cfg.colorB);
-			ui->b_led->setProperty("led", led_color);
-			ui->b_led->setIcon(gui::utils::get_colorized_icon(QIcon(":/Icons/controllers.png"), Qt::black, led_color));
-			m_handler->SetPadData(m_device_name, 0, 0, m_handler_cfg.colorR, m_handler_cfg.colorG, m_handler_cfg.colorB);
+			m_handler->SetPadData(m_device_name, 0, 0, m_handler_cfg.colorR, m_handler_cfg.colorG, m_handler_cfg.colorB, false, m_handler_cfg.led_battery_indicator_brightness);
 		}
 	}
 
@@ -860,7 +875,9 @@ void pad_settings_dialog::SwitchButtons(bool is_enabled)
 	ui->gb_vibration->setEnabled(is_enabled && m_enable_rumble);
 	ui->gb_sticks->setEnabled(is_enabled && m_enable_deadzones);
 	ui->gb_triggers->setEnabled(is_enabled && m_enable_deadzones);
-	ui->gb_led->setEnabled(is_enabled && m_enable_led);
+	ui->gb_battery->setEnabled(is_enabled && (m_enable_battery || m_enable_led));
+	ui->pb_battery->setEnabled(is_enabled && m_enable_battery);
+	ui->b_led_settings->setEnabled(is_enabled && m_enable_led);
 	ui->gb_mouse_accel->setEnabled(is_enabled && m_handler->m_type == pad_handler::keyboard);
 	ui->gb_mouse_dz->setEnabled(is_enabled && m_handler->m_type == pad_handler::keyboard);
 	ui->gb_stick_lerp->setEnabled(is_enabled && m_handler->m_type == pad_handler::keyboard);
@@ -980,7 +997,7 @@ void pad_settings_dialog::ChangeInputType()
 	if (!g_cfg_input.player[player]->handler.from_string(handler))
 	{
 		// Something went wrong
-		LOG_ERROR(GENERAL, "Failed to convert input string: %s", handler);
+		cfg_log.error("Failed to convert input string: %s", handler);
 		return;
 	}
 
@@ -991,37 +1008,40 @@ void pad_settings_dialog::ChangeInputType()
 	m_handler = GetHandler(g_cfg_input.player[player]->handler);
 	const auto device_list = m_handler->ListDevices();
 
+	// Localized tooltips
+	Tooltips tooltips;
+
 	// Change the description
 	QString description;
 	switch (m_handler->m_type)
 	{
 	case pad_handler::null:
-		description = m_json_handlers["null"].toString(); break;
+		description = tooltips.gamepad_settings.null; break;
 	case pad_handler::keyboard:
-		description = m_json_handlers["keyboard"].toString(); break;
+		description = tooltips.gamepad_settings.keyboard; break;
 #ifdef _WIN32
 	case pad_handler::xinput:
-		description = m_json_handlers["xinput"].toString(); break;
+		description = tooltips.gamepad_settings.xinput; break;
 	case pad_handler::mm:
-		description = m_json_handlers["mmjoy"].toString(); break;
+		description = tooltips.gamepad_settings.mmjoy; break;
 	case pad_handler::ds3:
-		description = m_json_handlers["ds3_windows"].toString(); break;
+		description = tooltips.gamepad_settings.ds3_windows; break;
 	case pad_handler::ds4:
-		description = m_json_handlers["ds4_windows"].toString(); break;
+		description = tooltips.gamepad_settings.ds4_windows; break;
 #elif __linux__
 	case pad_handler::ds3:
-		description = m_json_handlers["ds3_linux"].toString(); break;
+		description = tooltips.gamepad_settings.ds3_linux; break;
 	case pad_handler::ds4:
-		description = m_json_handlers["ds4_linux"].toString(); break;
+		description = tooltips.gamepad_settings.ds4_linux; break;
 #else
 	case pad_handler::ds3:
-		description = m_json_handlers["ds3_other"].toString(); break;
+		description = tooltips.gamepad_settings.ds3_other; break;
 	case pad_handler::ds4:
-		description = m_json_handlers["ds4_other"].toString(); break;
+		description = tooltips.gamepad_settings.ds4_other; break;
 #endif
 #ifdef HAVE_LIBEVDEV
 	case pad_handler::evdev:
-		description = (m_json_handlers["evdev"].toString()); break;
+		description = tooltips.gamepad_settings.evdev; break;
 #endif
 	default:
 		description = "";
@@ -1071,11 +1091,13 @@ void pad_settings_dialog::ChangeInputType()
 		{
 			if (!ui->chooseDevice->itemData(i).canConvert<pad_device_info>())
 			{
-				LOG_FATAL(GENERAL, "Cannot convert itemData for index %d and itemText %s", i, sstr(ui->chooseDevice->itemText(i)));
+				cfg_log.fatal("Cannot convert itemData for index %d and itemText %s", i, sstr(ui->chooseDevice->itemText(i)));
 				continue;
 			}
 			const pad_device_info info = ui->chooseDevice->itemData(i).value<pad_device_info>();
-			m_handler->get_next_button_press(info.name, [=](u16, std::string, std::string pad_name, std::array<int, 6>) { SwitchPadInfo(pad_name, true); }, [=](std::string pad_name) { SwitchPadInfo(pad_name, false); }, false);
+			m_handler->get_next_button_press(info.name,
+				[this](u16, std::string, std::string pad_name, u32, pad_preview_values) { SwitchPadInfo(pad_name, true); },
+				[this](std::string pad_name) { SwitchPadInfo(pad_name, false); }, false);
 			if (info.name == device)
 			{
 				ui->chooseDevice->setCurrentIndex(i);
@@ -1224,14 +1246,6 @@ void pad_settings_dialog::SaveProfile()
 		m_handler_cfg.rtriggerthreshold.set(ui->slider_trigger_right->value());
 		m_handler_cfg.lstickdeadzone.set(ui->slider_stick_left->value());
 		m_handler_cfg.rstickdeadzone.set(ui->slider_stick_right->value());
-	}
-
-	if (m_handler->has_led() && ui->b_led->property("led").canConvert<QColor>())
-	{
-		const QColor led_color = ui->b_led->property("led").value<QColor>();
-		m_handler_cfg.colorR.set(led_color.red());
-		m_handler_cfg.colorG.set(led_color.green());
-		m_handler_cfg.colorB.set(led_color.blue());
 	}
 
 	if (m_handler->m_type == pad_handler::keyboard)

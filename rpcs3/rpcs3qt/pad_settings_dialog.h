@@ -2,14 +2,14 @@
 
 #include <QButtonGroup>
 #include <QDialog>
-#include <QEvent>
-#include <QJsonObject>
 #include <QLabel>
 #include <QTabWidget>
 #include <QTimer>
 
-#include "Emu/Io/PadHandler.h"
+#include "Emu/Io/pad_config.h"
 #include "Emu/GameInfo.h"
+
+class PadHandlerBase;
 
 namespace Ui
 {
@@ -90,6 +90,9 @@ public:
 	explicit pad_settings_dialog(QWidget *parent = nullptr, const GameInfo *game = nullptr);
 	~pad_settings_dialog();
 
+public Q_SLOTS:
+	void apply_led_settings(int colorR, int colorG, int colorB, bool led_low_battery_blink, bool led_battery_indicator, int led_battery_indicator_brightness);
+
 private Q_SLOTS:
 	void OnPadButtonClicked(int id);
 	void OnTabChanged(int index);
@@ -104,9 +107,6 @@ private:
 	Ui::pad_settings_dialog *ui;
 	std::string m_title_id;
 
-	// Tooltip things
-	QJsonObject m_json_handlers;
-
 	// TabWidget
 	QTabWidget* m_tabs = nullptr;
 
@@ -115,6 +115,7 @@ private:
 	bool m_enable_rumble{ false };
 	bool m_enable_deadzones{ false };
 	bool m_enable_led{ false };
+	bool m_enable_battery{ false };
 
 	// Button Mapping
 	QButtonGroup* m_padButtons = nullptr;
@@ -171,7 +172,7 @@ private:
 	void ChangeProfile();
 
 	/** Repaints a stick deadzone preview label */
-	void RepaintPreviewLabel(QLabel* l, int dz, int w, int x, int y);
+	void RepaintPreviewLabel(QLabel* l, int deadzone, int desired_width, int x, int y);
 
 	std::shared_ptr<PadHandlerBase> GetHandler(pad_handler type);
 

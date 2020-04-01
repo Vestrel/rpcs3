@@ -1,39 +1,11 @@
 ﻿#pragma once
 
-#include "Utilities/Log.h"
+#include "settings.h"
+#include "util/logs.hpp"
 
-#include <QSettings>
-#include <QDir>
 #include <QVariant>
 #include <QSize>
 #include <QColor>
-
-struct gui_save
-{
-	QString key;
-	QString name;
-	QVariant def;
-
-	gui_save()
-	{
-		key = "";
-		name = "";
-		def = QVariant();
-	}
-
-	gui_save(const QString& k, const QString& n, const QVariant& d)
-	{
-		key = k;
-		name = n;
-		def = d;
-	}
-};
-
-typedef std::map<std::string, const QString> q_from_char;
-typedef QPair<QString, QString> q_string_pair;
-typedef QPair<QString, QSize> q_size_pair;
-typedef QList<q_string_pair> q_pair_list;
-typedef QList<q_size_pair> q_size_list;
 
 namespace gui
 {
@@ -121,24 +93,24 @@ namespace gui
 		return q_string_pair(path, title.simplified()); // simplified() forces single line text
 	}
 
-	const QString Settings    = QObject::tr("CurrentSettings");
-	const QString Default     = QObject::tr("default");
-	const QString None        = QObject::tr("none");
-	const QString main_window = "main_window";
-	const QString game_list   = "GameList";
-	const QString logger      = "Logger";
-	const QString debugger    = "Debugger";
-	const QString rsx         = "RSX_Debugger";
-	const QString meta        = "Meta";
-	const QString fs          = "FileSystem";
-	const QString gs_frame    = "GSFrame";
-	const QString trophy      = "Trophy";
-	const QString savedata    = "SaveData";
-	const QString users       = "Users";
-	const QString notes       = "Notes";
-	const QString titles      = "Titles";
-	const QString playtime    = "Playtime";
-	const QString last_played = "LastPlayed";
+	const QString Settings = "CurrentSettings";
+	const QString Default  = "default";
+	const QString None     = "none";
+
+	const QString main_window  = "main_window";
+	const QString game_list    = "GameList";
+	const QString logger       = "Logger";
+	const QString debugger     = "Debugger";
+	const QString rsx          = "RSX_Debugger";
+	const QString meta         = "Meta";
+	const QString fs           = "FileSystem";
+	const QString gs_frame     = "GSFrame";
+	const QString trophy       = "Trophy";
+	const QString savedata     = "SaveData";
+	const QString users        = "Users";
+	const QString notes        = "Notes";
+	const QString titles       = "Titles";
+	const QString localization = "Localization";
 
 	const QColor gl_icon_color = QColor(240, 240, 240, 255);
 
@@ -165,7 +137,7 @@ namespace gui
 	const gui_save mw_titleBarsVisible = gui_save(main_window, "titleBarsVisible", true);
 	const gui_save mw_geometry         = gui_save(main_window, "geometry",         QByteArray());
 	const gui_save mw_windowState      = gui_save(main_window, "windowState",      QByteArray());
-	const gui_save mw_mwState          = gui_save(main_window, "wwState",          QByteArray());
+	const gui_save mw_mwState          = gui_save(main_window, "mwState",          QByteArray());
 
 	const gui_save cat_hdd_game    = gui_save(game_list, "categoryVisibleHDDGame",    true);
 	const gui_save cat_disc_game   = gui_save(game_list, "categoryVisibleDiscGame",   true);
@@ -245,29 +217,25 @@ namespace gui
 
 	const gui_save um_geometry    = gui_save(users, "geometry",    QByteArray());
 	const gui_save um_active_user = gui_save(users, "active_user", "00000001");
+
+	const gui_save loc_language = gui_save(localization, "language", "en");
 }
 
 /** Class for GUI settings..
 */
-class gui_settings : public QObject
+class gui_settings : public settings
 {
 	Q_OBJECT
 
 public:
 	explicit gui_settings(QObject* parent = nullptr);
-	~gui_settings();
 
 	QString GetCurrentUser();
-	QString GetSettingsDir();
 
 	/** Changes the settings file to the destination preset*/
-	bool ChangeToConfig(const QString& friendly_name);
+	bool ChangeToConfig(const QString& config_name);
 
 	bool GetCategoryVisibility(int cat);
-	QVariant GetValue(const gui_save& entry);
-	QVariant GetValue(const QString& key, const QString& name, const QString& def);
-	QVariant List2Var(const q_pair_list& list);
-	q_pair_list Var2List(const QVariant &var);
 
 	void ShowConfirmationBox(const QString& title, const QString& text, const gui_save& entry, int* result, QWidget* parent);
 	void ShowInfoBox(const QString& title, const QString& text, const gui_save& entry, QWidget* parent);
@@ -281,20 +249,7 @@ public:
 	QStringList GetGameListCategoryFilters();
 
 public Q_SLOTS:
-	void Reset(bool removeMeta = false);
-
-	/** Remove entry */
-	void RemoveValue(const QString& key, const QString& name);
-
-	/** Write value to entry */
-	void SetValue(const gui_save& entry, const QVariant& value);
-	void SetValue(const QString& key, const QString& name, const QVariant& value);
-
-	void SetPlaytime(const QString& serial, const qint64& elapsed);
-	qint64 GetPlaytime(const QString& serial);
-
-	void SetLastPlayed(const QString& serial, const QString& date);
-	QString GetLastPlayed(const QString& serial);
+	void Reset(bool remove_meta = false);
 
 	/** Sets the visibility of the chosen category. */
 	void SetCategoryVisibility(int cat, const bool& val);
@@ -303,19 +258,15 @@ public Q_SLOTS:
 
 	void SetCustomColor(int col, const QColor& val);
 
-	void SaveCurrentConfig(const QString& friendly_name);
+	void SaveCurrentConfig(const QString& config_name);
 
 	static QSize SizeFromSlider(int pos);
 	static gui_save GetGuiSaveForColumn(int col);
 
 private:
-	QString ComputeSettingsDir();
-	void BackupSettingsToTarget(const QString& friendly_name);
+	void SaveConfigNameToDefault(const QString& config_name);
+	void BackupSettingsToTarget(const QString& config_name);
 	void ShowBox(bool confirm, const QString& title, const QString& text, const gui_save& entry, int* result, QWidget* parent, bool always_on_top);
 
-	QSettings m_settings;
-	QDir m_settingsDir;
 	QString m_current_name;
-	QMap<QString, qint64> m_playtime;
-	QMap<QString, QString> m_last_played;
 };

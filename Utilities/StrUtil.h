@@ -7,28 +7,19 @@
 #include <functional>
 #include <string_view>
 
-// Copy null-terminated string from std::string to char array with truncation
-template <std::size_t N>
-inline void strcpy_trunc(char (&dst)[N], const std::string& src)
-{
-	const std::size_t count = src.size() >= N ? N - 1 : src.size();
-	std::memcpy(dst, src.c_str(), count);
-	std::memset(dst + count, 0, N - count);
-}
+#ifdef _WIN32
+std::string wchar_to_utf8(wchar_t *src);
+std::string wchar_path_to_ansi_path(const std::wstring& src);
+std::string utf8_path_to_ansi_path(const std::string& src);
+#endif
 
-// Copy null-terminated string from char array to another char array with truncation
-template <std::size_t N, std::size_t N2>
-inline void strcpy_trunc(char (&dst)[N], const char (&src)[N2])
+// Copy null-terminated string from a std::string or a char array to a char array with truncation
+template <typename D, typename T>
+inline void strcpy_trunc(D& dst, const T& src)
 {
-	const std::size_t count = N2 >= N ? N - 1 : N2;
-	std::memcpy(dst, src, count);
-	std::memset(dst + count, 0, N - count);
-}
-
-template <std::size_t N>
-inline bool ends_with(const std::string& src, const char (&end)[N])
-{
-	return src.size() >= N - 1 && src.compare(src.size() - (N - 1), N - 1, end, N - 1) == 0;
+	const std::size_t count = std::size(src) >= std::size(dst) ? std::size(dst) - 1 : std::size(src);
+	std::memcpy(std::data(dst), std::data(src), count);
+	std::memset(std::data(dst) + count, 0, std::size(dst) - count);
 }
 
 namespace fmt

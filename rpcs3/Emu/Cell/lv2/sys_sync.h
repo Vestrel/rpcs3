@@ -9,10 +9,12 @@
 #include "Emu/Cell/ErrorCodes.h"
 #include "Emu/IdManager.h"
 #include "Emu/IPC.h"
+#include "Emu/system_config.h"
 #include "Emu/System.h"
 
 #include <deque>
 #include <thread>
+#include <string_view>
 
 // attr_protocol (waiting scheduling policy)
 enum
@@ -74,6 +76,18 @@ private:
 
 public:
 
+	static std::string_view name64(const u64& name_u64)
+	{
+		std::string_view str{reinterpret_cast<const char*>(&name_u64), 7};
+
+		if (const auto pos = str.find_first_of('\0'); pos != umax)
+		{
+			str.remove_suffix(str.size() - pos);
+		}
+
+		return str;
+	};
+
 	// Find and remove the object from the container (deque or vector)
 	template <typename T, typename E>
 	static bool unqueue(std::deque<T*>& queue, const E& object)
@@ -110,7 +124,7 @@ public:
 
 		for (auto found = it, end = queue.cend(); found != end; found++)
 		{
-			const u32 _prio = static_cast<E*>(*found)->prio;
+			const s32 _prio = static_cast<E*>(*found)->prio;
 
 			if (_prio < prio)
 			{
@@ -129,7 +143,7 @@ private:
 	static void sleep_unlocked(cpu_thread&, u64 timeout);
 
 	// Schedule the thread
-	static void awake_unlocked(cpu_thread*, s32 prio = enqueue_cmd);
+	static bool awake_unlocked(cpu_thread*, s32 prio = enqueue_cmd);
 
 public:
 	static void sleep(cpu_thread& cpu, const u64 timeout = 0)
@@ -139,16 +153,17 @@ public:
 		g_to_awake.clear();
 	}
 
-	static inline void awake(cpu_thread* const thread, s32 prio = enqueue_cmd)
+	static inline bool awake(cpu_thread* const thread, s32 prio = enqueue_cmd)
 	{
 		std::lock_guard lock(g_mutex);
-		awake_unlocked(thread, prio);
+		return awake_unlocked(thread, prio);
 	}
 
-	static void yield(cpu_thread& thread)
+	// Returns true on successful context switch, false otherwise
+	static bool yield(cpu_thread& thread)
 	{
 		vm::temporary_unlock(thread);
-		awake(&thread, yield_cmd);
+		return awake(&thread, yield_cmd);
 	}
 
 	static void set_priority(cpu_thread& thread, s32 prio)
@@ -171,13 +186,13 @@ public:
 	static void cleanup();
 
 	template <typename T, typename F>
-	static error_code create(u32 pshared, u64 ipc_key, s32 flags, F&& make)
+	static error_code create(u32 pshared, u64 ipc_key, s32 flags, F&& make, bool key_not_zero = true)
 	{
 		switch (pshared)
 		{
 		case SYS_SYNC_PROCESS_SHARED:
 		{
-			if (ipc_key == 0)
+			if (key_not_zero && ipc_key == 0)
 			{
 				return CELL_EINVAL;
 			}
@@ -250,16 +265,19 @@ public:
 		}
 	}
 
-	template<bool is_usleep = false>
+	template<bool is_usleep = false, bool scale = true>
 	static bool wait_timeout(u64 usec, cpu_thread* const cpu = {})
 	{
-		static_assert(UINT64_MAX / cond_variable::max_timeout >= g_cfg.core.clocks_scale.max, "timeout may overflow during scaling");
+		static_assert(UINT64_MAX / cond_variable::max_timeout >= 100, "max timeout is not valid for scaling");
 
-		// Clamp to max timeout accepted
-		const u64 max_usec = cond_variable::max_timeout * 100 / g_cfg.core.clocks_scale.max;
+		if constexpr (scale)
+		{
+			// Scale time
+			usec = std::min<u64>(usec, UINT64_MAX / 100) * 100 / g_cfg.core.clocks_scale;
+		}
 
-		// Now scale the result
-		usec = (std::min<u64>(usec, max_usec) * g_cfg.core.clocks_scale) / 100;
+		// Clamp
+		usec = std::min<u64>(usec, cond_variable::max_timeout);
 
 		extern u64 get_system_time();
 
@@ -303,7 +321,7 @@ public:
 				}
 			}
 
-			if (Emu.IsStopped())
+			if (thread_ctrl::state() == thread_state::aborting)
 			{
 				return false;
 			}

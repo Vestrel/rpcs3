@@ -26,7 +26,8 @@ if [ "$DEPLOY_APPIMAGE" = "true" ]; then
 	# This may need updating if you update the compiler or rpcs3 uses newer c++ features
 	# See https://github.com/gcc-mirror/gcc/blob/master/libstdc%2B%2B-v3/config/abi/pre/gnu.ver
 	# for which definitions correlate to which CXXABI version.
-	printf "#include <memory>\nint main(){std::make_exception_ptr(0);}" | $CXX -x c++ -o ./appdir/usr/optional/checker -
+	# Currently we target a minimum of GLIBCXX_3.4.26 and CXXABI_1.3.11
+	printf "#include <bits/stdc++.h>\nint main(){std::make_exception_ptr(0);std::pmr::get_default_resource();}" | $CXX -x c++ -std=c++2a -o ./appdir/usr/optional/checker -
 	
 	# Package it up and send it off
 	./squashfs-root/usr/bin/appimagetool /rpcs3/build/appdir
@@ -35,18 +36,30 @@ if [ "$DEPLOY_APPIMAGE" = "true" ]; then
 	COMM_COUNT="$(git rev-list --count HEAD)"
 	curl -sLO https://github.com/hcorion/uploadtool/raw/master/upload.sh
 	
-	mv ./RPCS3*.AppImage rpcs3-v${COMM_TAG}-${COMM_COUNT}-${TRAVIS_COMMIT:0:8}_linux64.AppImage
+	if [[ -n "$BUILD_SOURCEVERSION" ]]; then
+		COMMIT_HASH=$BUILD_SOURCEVERSION
+	elif [[ -n "$TRAVIS_COMMIT" ]]; then
+		COMMIT_HASH=$TRAVIS_COMMIT
+	fi
+	
+	mv ./RPCS3*.AppImage rpcs3-v${COMM_TAG}-${COMM_COUNT}-${COMMIT_HASH:0:8}_linux64.AppImage
+	
+	# If we're building using Azure Pipelines, let's copy over the AppImage artifact
+	if [[ -n "$BUILD_ARTIFACTSTAGINGDIRECTORY" ]]; then
+		cp ./rpcs3*.AppImage ~/artifacts
+	fi
 	
 	FILESIZE=($(stat -c %s ./rpcs3*.AppImage))
 	SHA256SUM=($(sha256sum ./rpcs3*.AppImage))
-	
-	unset TRAVIS_REPO_SLUG
-	REPO_SLUG=RPCS3/rpcs3-binaries-linux \
-		UPLOADTOOL_BODY="$SHA256SUM;${FILESIZE}B"\
-		RELEASE_NAME=build-${TRAVIS_COMMIT}\
-		RELEASE_TITLE=${COMM_TAG}-${COMM_COUNT}\
-		REPO_COMMIT=d812f1254a1157c80fd402f94446310560f54e5f\
-		bash upload.sh rpcs3*.AppImage
+	if [ -n "$GITHUB_TOKEN" ]; then
+		unset TRAVIS_REPO_SLUG
+		REPO_SLUG=RPCS3/rpcs3-binaries-linux \
+			UPLOADTOOL_BODY="$SHA256SUM;${FILESIZE}B"\
+			RELEASE_NAME=build-${TRAVIS_COMMIT}\
+			RELEASE_TITLE=${COMM_TAG}-${COMM_COUNT}\
+			REPO_COMMIT=d812f1254a1157c80fd402f94446310560f54e5f\
+			bash upload.sh rpcs3*.AppImage
+	fi
 fi
 if [ "$DEPLOY_PPA" = "true" ]; then
 	export DEBFULLNAME="RPCS3 Build Bot"

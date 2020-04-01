@@ -1,15 +1,18 @@
 ﻿#include "stdafx.h"
-#include "Emu/System.h"
+#include "Emu/VFS.h"
+#include "Emu/Cell/lv2/sys_fs.h"
 #include "Emu/Cell/lv2/sys_sync.h"
 #include "Emu/Cell/lv2/sys_process.h"
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/Cell/Modules/cellSysutil.h"
+#include "Emu/Cell/Modules/cellUserInfo.h"
 
 #include "cellSaveData.h"
 #include "cellMsgDialog.h"
 
 #include "Loader/PSF.h"
 #include "Utilities/StrUtil.h"
+#include "Utilities/span.h"
 
 #include <thread>
 #include <mutex>
@@ -74,21 +77,24 @@ namespace
 {
 	struct savedata_context
 	{
-		CellSaveDataCBResult result;
-		CellSaveDataListGet  listGet;
-		CellSaveDataListSet  listSet;
-		CellSaveDataFixedSet fixedSet;
-		CellSaveDataStatGet  statGet;
-		CellSaveDataStatSet  statSet;
-		CellSaveDataFileGet  fileGet;
-		CellSaveDataFileSet  fileSet;
-		CellSaveDataDoneGet  doneGet;
+		alignas(16) CellSaveDataCBResult result;
+		alignas(16) CellSaveDataListGet  listGet;
+		alignas(16) CellSaveDataListSet  listSet;
+		alignas(16) CellSaveDataFixedSet fixedSet;
+		alignas(16) CellSaveDataStatGet  statGet;
+		alignas(16) CellSaveDataStatSet  statSet;
+		alignas(16) CellSaveDataFileGet  fileGet;
+		alignas(16) CellSaveDataFileSet  fileSet;
+		alignas(16) CellSaveDataDoneGet  doneGet;
 	};
 }
 
 vm::gvar<savedata_context> g_savedata_context;
 
-std::mutex g_savedata_mutex;
+struct savedata_mutex
+{
+	semaphore<> mutex;
+};
 
 static std::vector<SaveDataEntry> get_save_entries(const std::string& base_dir, const std::string& prefix)
 {
@@ -102,12 +108,12 @@ static std::vector<SaveDataEntry> get_save_entries(const std::string& base_dir, 
 	// get the saves matching the supplied prefix
 	for (auto&& entry : fs::dir(base_dir))
 	{
-		if (!entry.is_directory || entry.name == "." || entry.name == "..")
+		if (!entry.is_directory || sysutil_check_name_string(entry.name.c_str(), 1, CELL_SAVEDATA_DIRNAME_SIZE) != 0)
 		{
 			continue;
 		}
 
-		if (entry.name.substr(0, prefix.size()) != prefix)
+		if (!entry.name.starts_with(prefix))
 		{
 			continue;
 		}
@@ -127,7 +133,7 @@ static std::vector<SaveDataEntry> get_save_entries(const std::string& base_dir, 
 		save_entry.subtitle  = psf.at("SUB_TITLE").as_string();
 		save_entry.details   = psf.at("DETAIL").as_string();
 
-		for (const auto entry2 : fs::dir(base_dir + entry.name))
+		for (const auto& entry2 : fs::dir(base_dir + entry.name))
 		{
 			save_entry.size += entry2.size;
 		}
@@ -148,7 +154,7 @@ static std::vector<SaveDataEntry> get_save_entries(const std::string& base_dir, 
 
 static error_code select_and_delete(ppu_thread& ppu)
 {
-	std::unique_lock lock(g_savedata_mutex, std::try_to_lock);
+	std::unique_lock lock(g_fxo->get<savedata_mutex>()->mutex, std::try_to_lock);
 
 	if (!lock)
 	{
@@ -250,19 +256,15 @@ static error_code select_and_delete(ppu_thread& ppu)
 }
 
 // Displays a CellSaveDataCBResult error message.
-static error_code display_callback_result_error_message(ppu_thread& ppu, vm::ptr<CellSaveDataCBResult> result, u32 errDialog)
+static error_code display_callback_result_error_message(ppu_thread& ppu, const CellSaveDataCBResult& result, u32 errDialog)
 {
-	// TODO: errDialog == CELL_SAVEDATA_ERRDIALOG_NOREPEAT
-	if (!result || errDialog != CELL_SAVEDATA_ERRDIALOG_ALWAYS)
-		return CELL_SAVEDATA_ERROR_CBRESULT;
-
 	std::string msg;
 	bool use_invalid_message = false;
 
-	switch (result->result)
+	switch (result.result)
 	{
 	case CELL_SAVEDATA_CBRESULT_ERR_NOSPACE:
-		msg = fmt::format("Error - Insufficient free space\n\nSpace needed: %d KB", result->errNeedSizeKB);
+		msg = fmt::format("Error - Insufficient free space\n\nSpace needed: %d KB", result.errNeedSizeKB);
 		break;
 	case CELL_SAVEDATA_CBRESULT_ERR_FAILURE:
 		msg = "Error - Failed to save or load";
@@ -274,18 +276,23 @@ static error_code display_callback_result_error_message(ppu_thread& ppu, vm::ptr
 		msg = "Error - Save data cannot be found";
 		break;
 	case CELL_SAVEDATA_CBRESULT_ERR_INVALID:
-		if (result->invalidMsg)
+		if (result.invalidMsg)
 			use_invalid_message = true;
 		break;
 	default:
-		return CELL_SAVEDATA_ERROR_CBRESULT;
+		// ****** sysutil savedata parameter error : 22 ******
+		return {CELL_SAVEDATA_ERROR_PARAM, "22"};
 	}
+
+	// TODO: errDialog == CELL_SAVEDATA_ERRDIALOG_NOREPEAT
+	if (errDialog != CELL_SAVEDATA_ERRDIALOG_ALWAYS)
+		return CELL_SAVEDATA_ERROR_CBRESULT;
 
 	// Yield before a blocking dialog is being spawned
 	lv2_obj::sleep(ppu);
 
 	// Get user confirmation by opening a blocking dialog (return value should be irrelevant here)
-	error_code res = open_msg_dialog(true, CELL_MSGDIALOG_TYPE_SE_TYPE_NORMAL | CELL_MSGDIALOG_TYPE_BUTTON_TYPE_OK, use_invalid_message ? result->invalidMsg : vm::make_str(msg));
+	error_code res = open_msg_dialog(true, CELL_MSGDIALOG_TYPE_SE_TYPE_NORMAL | CELL_MSGDIALOG_TYPE_BUTTON_TYPE_OK, use_invalid_message ? result.invalidMsg : vm::make_str(msg));
 
 	// Reschedule after a blocking dialog returns
 	if (ppu.check_state())
@@ -395,7 +402,7 @@ static s32 savedata_check_args(u32 operation, u32 version, vm::cptr<char> dirNam
 			if (cur == '\0' || cur == '|')
 			{
 				// Check prefix if not empty
-				if (posprefix) 
+				if (posprefix)
 				{
 					switch (sysutil_check_name_string(buf, 1, CELL_SAVEDATA_DIRNAME_SIZE))
 					{
@@ -467,7 +474,7 @@ static s32 savedata_check_args(u32 operation, u32 version, vm::cptr<char> dirNam
 
 	if (operation == SAVEDATA_OP_FIXED_DELETE)
 	{
-		if (setBuf->fileListMax != 0)
+		if (setBuf->fileListMax != 0u)
 		{
 			// ****** sysutil savedata parameter error : 9 ******
 			return 9;
@@ -521,6 +528,12 @@ static s32 savedata_check_args(u32 operation, u32 version, vm::cptr<char> dirNam
 		}
 	}
 
+	if (userId > CELL_SYSUTIL_USERID_MAX)
+	{
+		// ****** sysutil savedata parameter error : 91 ******
+		return 91;
+	}
+
 	return CELL_OK;
 }
 
@@ -534,7 +547,7 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 		return {CELL_SAVEDATA_ERROR_PARAM, std::to_string(ecode)};
 	}
 
-	std::unique_lock lock(g_savedata_mutex, std::try_to_lock);
+	std::unique_lock lock(g_fxo->get<savedata_mutex>()->mutex, std::try_to_lock);
 
 	if (!lock)
 	{
@@ -551,7 +564,7 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 
 	lv2_sleep(ppu, 500);
 
-	*g_savedata_context = {};
+	std::memset(g_savedata_context.get_ptr(), 0, g_savedata_context.size());
 
 	vm::ptr<CellSaveDataCBResult> result   = g_savedata_context.ptr(&savedata_context::result);
 	vm::ptr<CellSaveDataListGet>  listGet  = g_savedata_context.ptr(&savedata_context::listGet);
@@ -566,6 +579,11 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 	// userId(0) = CELL_SYSUTIL_USERID_CURRENT;
 	// path of the specified user (00000001 by default)
 	const std::string base_dir = vfs::get(fmt::format("/dev_hdd0/home/%08u/savedata/", userId ? userId : Emu.GetUsrId()));
+
+	if (userId && !fs::is_dir(base_dir))
+	{
+		return CELL_SAVEDATA_ERROR_NOUSER;
+	}
 
 	result->userdata = userdata; // probably should be assigned only once (allows the callback to change it)
 
@@ -585,17 +603,22 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 		// get the saves matching the supplied prefix
 		for (auto&& entry : fs::dir(base_dir))
 		{
-			if (!entry.is_directory || entry.name == "." || entry.name == "..")
+			if (!entry.is_directory || sysutil_check_name_string(entry.name.c_str(), 1, CELL_SAVEDATA_DIRNAME_SIZE) != 0)
 			{
 				continue;
 			}
 
 			for (const auto& prefix : prefix_list)
 			{
-				if (entry.name.substr(0, prefix.size()) == prefix)
+				if (entry.name.starts_with(prefix))
 				{
 					// Count the amount of matches and the amount of listed directories
-					listGet->dirNum++; // total number of directories
+					if (!listGet->dirNum++) // total number of directories
+					{
+						// Clear buf exactly to bufSize only if dirNum becomes non-zero (regardless of dirListNum)
+						std::memset(setBuf->buf.get_ptr(), 0, setBuf->bufSize);
+					}
+
 					if (listGet->dirListNum < setBuf->dirListMax)
 					{
 						listGet->dirListNum++; // number of directories in list
@@ -615,7 +638,7 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 						save_entry2.subtitle = psf.at("SUB_TITLE").as_string();
 						save_entry2.details = psf.at("DETAIL").as_string();
 
-						for (const auto entry2 : fs::dir(base_dir + entry.name))
+						for (const auto& entry2 : fs::dir(base_dir + entry.name))
 						{
 							save_entry2.size += entry2.size;
 						}
@@ -672,7 +695,6 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 			auto& dir = *dir_list++;
 			strcpy_trunc(dir.dirName, entry.dirName);
 			strcpy_trunc(dir.listParam, entry.listParam);
-			std::memset(dir.reserved, 0, sizeof(dir.reserved));
 		}
 
 		s32 selected = -1;
@@ -680,45 +702,156 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 
 		if (funcList)
 		{
+			listSet->focusPosition = CELL_SAVEDATA_FOCUSPOS_LISTHEAD;
+
+			std::memset(result.get_ptr(), 0, ::offset32(&CellSaveDataCBResult::userdata));
+
 			// List Callback
 			funcList(ppu, result, listGet, listSet);
 
-			if (result->result < 0)
+			if (const s32 res = result->result; res != CELL_SAVEDATA_CBRESULT_OK_NEXT)
 			{
 				cellSaveData.warning("savedata_op(): funcList returned result=%d.", result->result);
 
-				return display_callback_result_error_message(ppu, result, errDialog);
+				// if the callback has returned ok, lets return OK.
+				// typically used at game launch when no list is actually required.
+				// CELL_SAVEDATA_CBRESULT_OK_LAST_NOCONFIRM is only valid for funcFile and funcDone
+				if (result->result == CELL_SAVEDATA_CBRESULT_OK_LAST || result->result == CELL_SAVEDATA_CBRESULT_OK_LAST_NOCONFIRM)
+				{
+					return CELL_OK;
+				}
+
+				return display_callback_result_error_message(ppu, *result, errDialog);
 			}
 
-			// if the callback has returned ok, lets return OK.
-			// typically used at game launch when no list is actually required.
-			// CELL_SAVEDATA_CBRESULT_OK_LAST_NOCONFIRM is only valid for funcFile and funcDone
-			if (result->result == CELL_SAVEDATA_CBRESULT_OK_LAST || result->result == CELL_SAVEDATA_CBRESULT_OK_LAST_NOCONFIRM)
+			if (listSet->fixedListNum > CELL_SAVEDATA_LISTITEM_MAX)
 			{
-				return CELL_OK;
+				// ****** sysutil savedata parameter error : 38 ******
+				return {CELL_SAVEDATA_ERROR_PARAM, "38"};
+			}
+
+			if (listSet->fixedListNum && !listSet->fixedList)
+			{
+				// ****** sysutil savedata parameter error : 39 ******
+				return {CELL_SAVEDATA_ERROR_PARAM, "39"};
+			}
+			else
+			{
+				// TODO: What happens if fixedListNum is zero?
+			}
+
+			std::set<std::string_view> selected_list;
+
+			for (u32 i = 0; i < listSet->fixedListNum; i++)
+			{
+				switch (sysutil_check_name_string(listSet->fixedList[i].dirName, 1, CELL_SAVEDATA_DIRNAME_SIZE))
+				{
+				case -1:
+				{
+					// ****** sysutil savedata parameter error : 40 ******
+					return {CELL_SAVEDATA_ERROR_PARAM, "40"};
+				}
+				case -2:
+				{
+					if (listSet->fixedList[i].dirName[0]) // ???
+					{
+						// ****** sysutil savedata parameter error : 41 ******
+						return {CELL_SAVEDATA_ERROR_PARAM, "41"};
+					}
+
+					break;
+				}
+				case 0: break;
+				default: ASSUME(0);
+				}
+
+				selected_list.emplace(listSet->fixedList[i].dirName);
 			}
 
 			// Clean save data list
-			save_entries.erase(std::remove_if(save_entries.begin(), save_entries.end(), [&listSet](const SaveDataEntry& entry) -> bool
+			save_entries.erase(std::remove_if(save_entries.begin(), save_entries.end(), [&selected_list](const SaveDataEntry& entry) -> bool
 			{
-				for (u32 i = 0; i < listSet->fixedListNum; i++)
+				return selected_list.count(entry.dirName) == 0;
+			}), save_entries.end());
+
+			if (listSet->newData)
+			{
+				switch (listSet->newData->iconPosition)
 				{
-					if (entry.dirName == listSet->fixedList[i].dirName)
-					{
-						return false;
-					}
+				case CELL_SAVEDATA_ICONPOS_HEAD:
+				case CELL_SAVEDATA_ICONPOS_TAIL:
+					break;
+				default:
+				{
+					// ****** sysutil savedata parameter error : 43 ******
+					return {CELL_SAVEDATA_ERROR_PARAM, "43"};
+				}
 				}
 
-				return true;
-			}), save_entries.end());
+				if (!listSet->newData->dirName)
+				{
+					// ****** sysutil savedata parameter error : 44 ******
+					return {CELL_SAVEDATA_ERROR_PARAM, "44"};
+				}
+
+				switch (sysutil_check_name_string(listSet->newData->dirName.get_ptr(), 1, CELL_SAVEDATA_DIRNAME_SIZE))
+				{
+				case -1:
+				{
+					// ****** sysutil savedata parameter error : 45 ******
+					return {CELL_SAVEDATA_ERROR_PARAM, "45"};
+				}
+				case -2:
+				{
+					if (listSet->newData->dirName[0]) // ???
+					{
+						// ****** sysutil savedata parameter error : 4 ******
+						return {CELL_SAVEDATA_ERROR_PARAM, "46"};
+					}
+
+					break;
+				}
+				case 0: break;
+				default: ASSUME(0);
+				}
+			}
 
 			switch (const u32 pos_type = listSet->focusPosition)
 			{
 			case CELL_SAVEDATA_FOCUSPOS_DIRNAME:
 			{
-				for (s32 i = 0; i < save_entries.size(); i++)
+				if (!listSet->focusDirName)
 				{
-					if (save_entries[i].dirName == listSet->focusDirName.get_ptr())
+					// ****** sysutil savedata parameter error : 35 ******
+					return {CELL_SAVEDATA_ERROR_PARAM, "35"};
+				}
+
+				switch (sysutil_check_name_string(listSet->focusDirName.get_ptr(), 1, CELL_SAVEDATA_DIRNAME_SIZE))
+				{
+				case -1:
+				{
+					// ****** sysutil savedata parameter error : 36 ******
+					return {CELL_SAVEDATA_ERROR_PARAM, "36"};
+				}
+				case -2:
+				{
+					if (listSet->focusDirName[0]) // ???
+					{
+						// ****** sysutil savedata parameter error : 37 ******
+						return {CELL_SAVEDATA_ERROR_PARAM, "37"};
+					}
+
+					break;
+				}
+				case 0: break;
+				default: ASSUME(0);
+				}
+
+				const std::string dirStr = listSet->focusDirName.get_ptr();
+
+				for (u32 i = 0; i < save_entries.size(); i++)
+				{
+					if (save_entries[i].dirName == dirStr)
 					{
 						focused = i;
 						break;
@@ -741,7 +874,7 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 			{
 				s64 max = INT64_MIN;
 
-				for (s32 i = 0; i < save_entries.size(); i++)
+				for (u32 i = 0; i < save_entries.size(); i++)
 				{
 					if (save_entries[i].mtime > max)
 					{
@@ -756,7 +889,7 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 			{
 				s64 min = INT64_MAX;
 
-				for (s32 i = 0; i < save_entries.size(); i++)
+				for (u32 i = 0; i < save_entries.size(); i++)
 				{
 					if (save_entries[i].mtime < min)
 					{
@@ -769,6 +902,13 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 			}
 			case CELL_SAVEDATA_FOCUSPOS_NEWDATA:
 			{
+				if (!listSet->newData)
+				{
+					// ****** sysutil savedata parameter error : 34 ******
+					cellSaveData.error("savedata_op(): listSet->newData is null while listSet->focusPosition is NEWDATA");
+					return {CELL_SAVEDATA_ERROR_PARAM, "34"};
+				}
+
 				//TODO: If adding the new data to the save_entries vector
 				// to be displayed in the save mangaer UI, it should be focused here
 				break;
@@ -786,7 +926,6 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 		{
 			strcpy_trunc(doneGet->dirName, save_entries[selected].dirName);
 			doneGet->hddFreeSizeKB = 40 * 1024 * 1024 - 1; // Read explanation in cellHddGameCheck
-			doneGet->sizeKB        = 0;
 			doneGet->excResult     = CELL_OK;
 			std::memset(doneGet->reserved, 0, sizeof(doneGet->reserved));
 
@@ -794,14 +933,17 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 			const std::string del_path = base_dir + save_entries[selected].escaped + "/";
 
 			const fs::dir _dir(del_path);
+			u64 size_bytes = 0;
 
 			for (auto&& file : _dir)
 			{
 				if (!file.is_directory)
 				{
-					doneGet->sizeKB += static_cast<s32>(::align(file.size, 4096));
+					size_bytes += ::align(file.size, 1024);
 				}
 			}
+
+			doneGet->sizeKB = ::narrow<s32>(size_bytes / 1024);
 
 			if (_dir)
 			{
@@ -822,6 +964,7 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 				doneGet->excResult = CELL_SAVEDATA_ERROR_NODATA;
 			}
 
+			std::memset(result.get_ptr(), 0, ::offset32(&CellSaveDataCBResult::userdata));
 			funcDone(ppu, result, doneGet);
 		};
 
@@ -894,16 +1037,16 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 			{
 				delete_save();
 
-				if (result->result < 0)
+				if (const s32 res = result->result; res != CELL_SAVEDATA_CBRESULT_OK_NEXT)
 				{
-					cellSaveData.warning("savedata_op(): funcDone returned result=%d.", result->result);
+					cellSaveData.warning("savedata_op(): funcDone returned result=%d.", res);
 
-					return display_callback_result_error_message(ppu, result, errDialog);
-				}
+					if (res == CELL_SAVEDATA_CBRESULT_OK_LAST || res == CELL_SAVEDATA_CBRESULT_OK_LAST_NOCONFIRM)
+					{
+						return CELL_OK;
+					}
 
-				if (result->result == CELL_SAVEDATA_CBRESULT_OK_LAST || result->result == CELL_SAVEDATA_CBRESULT_OK_LAST_NOCONFIRM)
-				{
-					return CELL_OK;
+					return display_callback_result_error_message(ppu, *result, errDialog);
 				}
 
 				// CELL_SAVEDATA_CBRESULT_OK_NEXT expected
@@ -920,27 +1063,22 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 		{
 			lv2_sleep(ppu, 250);
 
+			std::memset(result.get_ptr(), 0, ::offset32(&CellSaveDataCBResult::userdata));
+
 			// Fixed Callback
 			funcFixed(ppu, result, listGet, fixedSet);
 
-			// check result for validity - CELL_SAVEDATA_CBRESULT_OK_LAST_NOCONFIRM is not a valid result for funcFixed
-			if (result->result < CELL_SAVEDATA_CBRESULT_ERR_INVALID || result->result >= CELL_SAVEDATA_CBRESULT_OK_LAST_NOCONFIRM)
+			if (const s32 res = result->result; res != CELL_SAVEDATA_CBRESULT_OK_NEXT)
 			{
-				cellSaveData.error("savedata_op(): funcFixed returned result=%d.", result->result);
-				return CELL_SAVEDATA_ERROR_PARAM;
-			}
+				cellSaveData.warning("savedata_op(): funcFixed returned result=%d.", res);
 
-			// skip all following steps if OK_LAST
-			if (result->result == CELL_SAVEDATA_CBRESULT_OK_LAST)
-			{
-				return CELL_OK;
-			}
+				// skip all following steps if OK_LAST (NOCONFIRM is not allowed)
+				if (res == CELL_SAVEDATA_CBRESULT_OK_LAST)
+				{
+					return CELL_OK;
+				}
 
-			if (result->result < 0)
-			{
-				cellSaveData.warning("savedata_op(): funcFixed returned result=%d.", result->result);
-
-				return display_callback_result_error_message(ppu, result, errDialog);
+				return display_callback_result_error_message(ppu, *result, errDialog);
 			}
 
 			if (!fixedSet->dirName)
@@ -949,20 +1087,41 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 				return {CELL_SAVEDATA_ERROR_PARAM, "26"};
 			}
 
-			for (s32 i = 0; i < save_entries.size(); i++)
+			switch (sysutil_check_name_string(fixedSet->dirName.get_ptr(), 1, CELL_SAVEDATA_DIRNAME_SIZE))
 			{
-				if (save_entries[i].dirName == fixedSet->dirName.get_ptr())
+			case -1:
+			{
+				// ****** sysutil savedata parameter error : 27 ******
+				return {CELL_SAVEDATA_ERROR_PARAM, "27"};
+			}
+			case -2:
+			{
+				// ****** sysutil savedata parameter error : 28 ******
+				return {CELL_SAVEDATA_ERROR_PARAM, "28"};
+			}
+			case 0: break;
+			default: ASSUME(0);
+			}
+
+			const std::string dirStr = fixedSet->dirName.get_ptr();
+
+			for (u32 i = 0; i < save_entries.size(); i++)
+			{
+				if (save_entries[i].dirName == dirStr)
 				{
 					selected = i;
 					break;
 				}
 			}
 
-			if (fixedSet->option != CELL_SAVEDATA_OPTION_NOCONFIRM &&
-				(operation == SAVEDATA_OP_FIXED_SAVE || operation == SAVEDATA_OP_FIXED_LOAD || operation == SAVEDATA_OP_FIXED_DELETE))
+			switch (fixedSet->option)
 			{
-				// Yield
-				lv2_obj::sleep(ppu);
+			case CELL_SAVEDATA_OPTION_NONE:
+			{
+				if (operation != SAVEDATA_OP_FIXED_SAVE && operation != SAVEDATA_OP_FIXED_LOAD && operation != SAVEDATA_OP_FIXED_DELETE)
+				{
+					break;
+				}
 
 				std::string message;
 
@@ -998,11 +1157,20 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 				{
 					return CELL_CANCEL;
 				}
+
+				break;
+			}
+			case CELL_SAVEDATA_OPTION_NOCONFIRM:
+				break;
+
+			default :
+				// ****** sysutil savedata parameter error : 81 ******
+				return {CELL_SAVEDATA_ERROR_PARAM, "81"};
 			}
 
 			if (selected == -1)
 			{
-				save_entry.dirName = fixedSet->dirName.get_ptr();
+				save_entry.dirName = dirStr;
 				save_entry.escaped = vfs::escape(save_entry.dirName);
 			}
 
@@ -1010,20 +1178,26 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 			{
 				delete_save();
 
-				if (result->result < 0)
+				if (const s32 res = result->result; res != CELL_SAVEDATA_CBRESULT_OK_NEXT)
 				{
-					cellSaveData.warning("savedata_op(): funcDone_ returned result=%d.", result->result);
+					cellSaveData.warning("savedata_op(): funcDone returned result=%d.", res);
 
-					return display_callback_result_error_message(ppu, result, errDialog);
+					return display_callback_result_error_message(ppu, *result, errDialog);
 				}
 
 				return CELL_OK;
 			}
 		}
 
+		if (listGet->dirNum)
+		{
+			// Clear buf exactly to bufSize again after funcFixed/List (for funcStat)
+			std::memset(setBuf->buf.get_ptr(), 0, setBuf->bufSize);
+		}
+
 		if (selected >= 0)
 		{
-			if (selected < save_entries.size())
+			if (selected + 0u < save_entries.size())
 			{
 				save_entry.dirName = std::move(save_entries[selected].dirName);
 				save_entry.escaped = vfs::escape(save_entry.dirName);
@@ -1060,6 +1234,12 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 
 	// Get save stats
 	{
+		if (!funcStat)
+		{
+			// ****** sysutil savedata parameter error : 20 ******
+			return {CELL_SAVEDATA_ERROR_PARAM, "20"};
+		}
+
 		fs::stat_t dir_info{};
 		if (!fs::stat(dir_path, dir_info))
 		{
@@ -1088,11 +1268,17 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 		statGet->fileNum = 0;
 		statGet->fileList.set(setBuf->buf.addr());
 		statGet->fileListNum = 0;
-		memset(statGet->reserved, 0, sizeof(statGet->reserved));
+		std::memset(statGet->reserved, 0, sizeof(statGet->reserved));
+
+		if (!save_entry.isNew)
+		{
+			// Clear to bufSize if !isNew regardless of fileNum
+			std::memset(setBuf->buf.get_ptr(), 0, setBuf->bufSize);
+		}
 
 		auto file_list = statGet->fileList.get_ptr();
 
-		u32 size_kbytes = 0;
+		u64 size_bytes = 0;
 
 		std::vector<fs::dir_entry> files_sorted;
 
@@ -1132,7 +1318,7 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 			{
 				statGet->fileNum++;
 
-				size_kbytes += ::narrow<u32>((entry.size + 1023) / 1024); // firmware rounds this value up
+				size_bytes += ::align(entry.size, 1024); // firmware rounds this value up
 
 				if (statGet->fileListNum >= setBuf->fileListMax)
 					continue;
@@ -1175,32 +1361,24 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 		}
 
 		statGet->sysSizeKB = 35; // always reported as 35 regardless of actual file sizes
-		statGet->sizeKB = !save_entry.isNew ? size_kbytes + statGet->sysSizeKB : 0;
+		statGet->sizeKB = !save_entry.isNew ? ::narrow<s32>((size_bytes / 1024) + statGet->sysSizeKB) : 0;
+
+		std::memset(result.get_ptr(), 0, ::offset32(&CellSaveDataCBResult::userdata));
 
 		// Stat Callback
 		funcStat(ppu, result, statGet, statSet);
 
-		if (result->result != CELL_SAVEDATA_CBRESULT_OK_NEXT)
+		if (const s32 res = result->result; res != CELL_SAVEDATA_CBRESULT_OK_NEXT)
 		{
-			cellSaveData.warning("savedata_op(): funcStat returned result=%d.", result->result);
+			cellSaveData.warning("savedata_op(): funcStat returned result=%d.", res);
 
-			// Skip and error
-			if (result->result >= CELL_SAVEDATA_CBRESULT_OK_LAST_NOCONFIRM || result->result < CELL_SAVEDATA_CBRESULT_ERR_INVALID)
-			{
-				// ****** sysutil savedata parameter error : 22 ******
-				return {CELL_SAVEDATA_ERROR_PARAM, "22"};
-			}
-
-			if (result->result < CELL_SAVEDATA_CBRESULT_OK_NEXT)
-			{
-				return display_callback_result_error_message(ppu, result, errDialog);
-			}
-
-			// Skip and return without error
-			if (result->result == CELL_SAVEDATA_CBRESULT_OK_LAST)
+			// Skip and return without error on OK_LAST (NOCONFIRM is not allowed)
+			if (res == CELL_SAVEDATA_CBRESULT_OK_LAST)
 			{
 				return CELL_OK;
 			}
+
+			return display_callback_result_error_message(ppu, *result, errDialog);
 		}
 
 		if (statSet->setParam)
@@ -1215,6 +1393,14 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 			{
 				// In firmware 3.70 or higher parental_level was changed to reserved2 and has to zeroes
 				if (statSet->setParam->parental_level)
+				{
+					// ****** sysutil savedata parameter error : 58 ******
+					return {CELL_SAVEDATA_ERROR_PARAM, "58"};
+				}
+			}
+			else
+			{
+				if (statSet->setParam->parental_level > 11)
 				{
 					// ****** sysutil savedata parameter error : 58 ******
 					return {CELL_SAVEDATA_ERROR_PARAM, "58"};
@@ -1306,10 +1492,8 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 		}
 	}
 
-
-
 	// Create save directory if necessary
-	if (psf.size() && save_entry.isNew && !fs::create_dir(dir_path))
+	if (!psf.empty() && save_entry.isNew && !fs::create_dir(dir_path) && fs::g_tls_error != fs::error::exist)
 	{
 		cellSaveData.warning("savedata_op(): failed to create %s (%s)", dir_path, fs::g_tls_error);
 		return CELL_SAVEDATA_ERROR_ACCESS_ERROR;
@@ -1332,23 +1516,35 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 	}
 
 	fileGet->excSize = 0;
-	memset(fileGet->reserved, 0, sizeof(fileGet->reserved));
 
 	error_code savedata_result = CELL_OK;
 
 	while (funcFile)
 	{
+		std::memset(fileSet.get_ptr(), 0, fileSet.size());
+		std::memset(fileGet->reserved, 0, sizeof(fileGet->reserved));
+		std::memset(result.get_ptr(), 0, ::offset32(&CellSaveDataCBResult::userdata));
+
 		funcFile(ppu, result, fileGet, fileSet);
 
-		if (result->result < 0)
+		if (const s32 res = result->result; res != CELL_SAVEDATA_CBRESULT_OK_NEXT)
 		{
-			savedata_result = {CELL_SAVEDATA_ERROR_CBRESULT, +result->result};
-			break;
-		}
+			if (res == CELL_SAVEDATA_CBRESULT_OK_LAST || res == CELL_SAVEDATA_CBRESULT_OK_LAST_NOCONFIRM)
+			{
+				// TODO: display user prompt
+				break;
+			}
 
-		if (result->result == CELL_SAVEDATA_CBRESULT_OK_LAST || result->result == CELL_SAVEDATA_CBRESULT_OK_LAST_NOCONFIRM)
-		{
-			// TODO: display user prompt
+			cellSaveData.warning("savedata_op(): funcFile returned result=%d.", res);
+
+			if (res < CELL_SAVEDATA_CBRESULT_ERR_INVALID || res > CELL_SAVEDATA_CBRESULT_OK_LAST_NOCONFIRM)
+			{
+				// ****** sysutil savedata parameter error : 22 ******
+				savedata_result = {CELL_SAVEDATA_ERROR_PARAM, "22"};
+				break;
+			}
+
+			savedata_result = {CELL_SAVEDATA_ERROR_CBRESULT, res};
 			break;
 		}
 
@@ -1364,10 +1560,101 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 			if (!fileSet->fileName)
 			{
 				// ****** sysutil savedata parameter error : 69 ******
-				return {CELL_SAVEDATA_ERROR_PARAM, "69"};
+				savedata_result = {CELL_SAVEDATA_ERROR_PARAM, "69"};
+				break;
 			}
 
-			file_path = fileSet->fileName.get_ptr();
+			const char* fileName = fileSet->fileName.get_ptr();
+
+			if (const auto termpos = std::memchr(fileName, '\0', CELL_SAVEDATA_FILENAME_SIZE))
+			{
+				file_path.assign(fileName, static_cast<const char*>(termpos));
+			}
+			else
+			{
+				// ****** sysutil savedata parameter error : 71 ******
+				savedata_result = {CELL_SAVEDATA_ERROR_PARAM, "71"};
+				break;
+			}
+
+			auto dotpos = file_path.find_last_of('.');
+
+			if (dotpos == umax)
+			{
+				// Point to end of string instead
+				dotpos = file_path.size();
+			}
+
+			if (file_path.empty() || dotpos > 8u || file_path.size() - dotpos > 4u)
+			{
+				cellSaveData.error("savedata_op(): fileSet->fileName is illegal ('%s')", file_path);
+
+				// ****** sysutil savedata parameter error : 70 ******
+				savedata_result = {CELL_SAVEDATA_ERROR_PARAM, "70"};
+				break;
+			}
+
+			char name[10];
+
+			if (dotpos)
+			{
+				// Copy file name
+				gsl::span dst(name, dotpos + 1);
+				strcpy_trunc(dst, file_path);
+
+				// Allow multiple '.' even though sysutil_check_name_string does not
+				std::replace(name, name + dotpos, '.', '-');
+
+				// Allow '_' at start even though sysutil_check_name_string does not
+				if (name[0] == '_')
+				{
+					name[0] = '-';
+				}
+
+				if ((dotpos >= 5u && std::memcmp(name, "PARAM", 5) == 0) ||
+					(dotpos >= 4u && std::memcmp(name, "ICON", 4) == 0) ||
+					(dotpos >= 3u && std::memcmp(name, "PIC", 3) == 0) ||
+					(dotpos >= 3u && std::memcmp(name, "SND", 3) == 0))
+				{
+					// ****** sysutil savedata parameter error : 70 ******
+					cellSaveData.error("savedata_op(): fileSet->fileName is set to a system file name (%s)", file_path);
+					savedata_result = {CELL_SAVEDATA_ERROR_PARAM, "70"};
+					break;
+				}
+
+				// Check filename
+				if (sysutil_check_name_string(name, 1, 9) == -1)
+				{
+					cellSaveData.error("savedata_op(): fileSet->fileName is illegal due to file name ('%s')", file_path);
+
+					// ****** sysutil savedata parameter error : 70 ******
+					savedata_result = {CELL_SAVEDATA_ERROR_PARAM, "70"};
+					break;
+				}
+			}
+
+			if (file_path.size() > dotpos + 1)
+			{
+				// Copy file extension
+				gsl::span dst(name, file_path.size() - dotpos);
+				strcpy_trunc(dst, file_path.operator std::string_view().substr(dotpos + 1));
+
+				// Allow '_' at start even though sysutil_check_name_string does not
+				if (name[0] == '_')
+				{
+					name[0] = '-';
+				}
+
+				// Check file extension
+				if (sysutil_check_name_string(name, 1, 4) == -1)
+				{
+					cellSaveData.error("savedata_op(): fileSet->fileName is illegal due to file extension ('%s')", file_path);
+
+					// ****** sysutil savedata parameter error : 70 ******
+					savedata_result = {CELL_SAVEDATA_ERROR_PARAM, "70"};
+					break;
+				}
+			}
 
 			if (type == CELL_SAVEDATA_FILETYPE_SECUREFILE)
 			{
@@ -1410,10 +1697,6 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 			break;
 		}
 
-		psf.emplace("*" + file_path, fileSet->fileType == CELL_SAVEDATA_FILETYPE_SECUREFILE);
-
-		const u32 access_size = std::min<u32>(fileSet->fileSize, fileSet->fileBufSize);
-
 		// clang-format off
 		auto add_to_blist = [&](const std::string& to_add)
 		{
@@ -1433,20 +1716,16 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 		};
 		// clang-format on
 
+		if ((file_path == "." || file_path == "..") && fileSet->fileOperation <= CELL_SAVEDATA_FILEOP_WRITE_NOTRUNC)
+		{
+			savedata_result = CELL_SAVEDATA_ERROR_BROKEN;
+			break;
+		}
+
 		switch (const u32 op = fileSet->fileOperation)
 		{
 		case CELL_SAVEDATA_FILEOP_READ:
 		{
-			fs::file& file = all_files[file_path];
-
-			if (!file)
-			{
-				// ****** sysutil savedata parameter error : 22 ******
-				cellSaveData.error("Failed to open file %s%s", dir_path, file_path);
-				savedata_result = {CELL_SAVEDATA_ERROR_PARAM, "22"};
-				break;
-			}
-
 			if (fileSet->fileBufSize < fileSet->fileSize)
 			{
 				// ****** sysutil savedata parameter error : 72 ******
@@ -1454,22 +1733,45 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 				break;
 			}
 
-			if (!fileSet->fileBuf)
+			if (!fileSet->fileBuf && fileSet->fileBufSize)
 			{
 				// ****** sysutil savedata parameter error : 73 ******
 				savedata_result = {CELL_SAVEDATA_ERROR_PARAM, "73"};
 				break;
 			}
 
+			const auto file = std::as_const(all_files).find(file_path);
+
+			if (file == all_files.cend() || file->second.size() <= fileSet->fileOffset)
+			{
+				cellSaveData.error("Failed to open file %s%s", dir_path, file_path);
+				savedata_result = CELL_SAVEDATA_ERROR_FAILURE;
+				break;
+			}
+
 			// Read from memory file to vm
-			const u64 sr = file.seek(fileSet->fileOffset);
-			const u64 rr = file.read(fileSet->fileBuf.get_ptr(), access_size);
+			const u64 sr = file->second.seek(fileSet->fileOffset);
+			const u64 rr = lv2_file::op_read(file->second, fileSet->fileBuf, fileSet->fileSize);
 			fileGet->excSize = ::narrow<u32>(rr);
 			break;
 		}
 
 		case CELL_SAVEDATA_FILEOP_WRITE:
 		{
+			if (fileSet->fileBufSize < fileSet->fileSize)
+			{
+				// ****** sysutil savedata parameter error : 72 ******
+				savedata_result = {CELL_SAVEDATA_ERROR_PARAM, "72"};
+				break;
+			}
+
+			if (!fileSet->fileBuf && fileSet->fileBufSize)
+			{
+				// ****** sysutil savedata parameter error : 73 ******
+				savedata_result = {CELL_SAVEDATA_ERROR_PARAM, "73"};
+				break;
+			}
+
 			fs::file& file = all_files[file_path];
 
 			if (!file)
@@ -1479,7 +1781,7 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 
 			// Write to memory file and truncate
 			const u64 sr = file.seek(fileSet->fileOffset);
-			const u64 wr = file.write(fileSet->fileBuf.get_ptr(), access_size);
+			const u64 wr = lv2_file::op_write(file, fileSet->fileBuf, fileSet->fileSize);
 			file.trunc(sr + wr);
 			fileGet->excSize = ::narrow<u32>(wr);
 			all_times.erase(file_path);
@@ -1491,7 +1793,13 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 		case CELL_SAVEDATA_FILEOP_DELETE:
 		{
 			// Delete memory file
-			all_files[file_path].close();
+			if (all_files.erase(file_path) == 0)
+			{
+				cellSaveData.error("Failed to delete file %s%s", dir_path, file_path);
+				savedata_result = CELL_SAVEDATA_ERROR_FAILURE;
+				break;
+			}
+
 			psf.erase("*" + file_path);
 			fileGet->excSize = 0;
 			all_times.erase(file_path);
@@ -1502,6 +1810,20 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 
 		case CELL_SAVEDATA_FILEOP_WRITE_NOTRUNC:
 		{
+			if (fileSet->fileBufSize < fileSet->fileSize)
+			{
+				// ****** sysutil savedata parameter error : 72 ******
+				savedata_result = {CELL_SAVEDATA_ERROR_PARAM, "72"};
+				break;
+			}
+
+			if (!fileSet->fileBuf && fileSet->fileBufSize)
+			{
+				// ****** sysutil savedata parameter error : 73 ******
+				savedata_result = {CELL_SAVEDATA_ERROR_PARAM, "73"};
+				break;
+			}
+
 			fs::file& file = all_files[file_path];
 
 			if (!file)
@@ -1511,7 +1833,7 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 
 			// Write to memory file normally
 			const u64 sr = file.seek(fileSet->fileOffset);
-			const u64 wr = file.write(fileSet->fileBuf.get_ptr(), access_size);
+			const u64 wr = lv2_file::op_write(file, fileSet->fileBuf, fileSet->fileSize);
 			fileGet->excSize = ::narrow<u32>(wr);
 			all_times.erase(file_path);
 			add_to_blist(file_path);
@@ -1531,6 +1853,11 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 		if (savedata_result)
 		{
 			break;
+		}
+
+		if (fileSet->fileOperation != CELL_SAVEDATA_FILEOP_DELETE)
+		{
+			psf.emplace("*" + file_path, fileSet->fileType == CELL_SAVEDATA_FILETYPE_SECUREFILE);
 		}
 	}
 
@@ -1592,9 +1919,9 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 		fs::remove_all(old_path);
 	}
 
-	if (savedata_result == CELL_SAVEDATA_ERROR_CBRESULT)
+	if (savedata_result + 0u == CELL_SAVEDATA_ERROR_CBRESULT)
 	{
-		return display_callback_result_error_message(ppu, result, errDialog);
+		return display_callback_result_error_message(ppu, *result, errDialog);
 	}
 
 	return savedata_result;
@@ -1602,11 +1929,46 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 
 static NEVER_INLINE error_code savedata_get_list_item(vm::cptr<char> dirName, vm::ptr<CellSaveDataDirStat> dir, vm::ptr<CellSaveDataSystemFileParam> sysFileParam, vm::ptr<u32> bind, vm::ptr<u32> sizeKB, u32 userId)
 {
-	if (userId == 0)
+	if (userId == CELL_SYSUTIL_USERID_CURRENT)
 	{
 		userId = Emu.GetUsrId();
 	}
-	std::string save_path = vfs::get(fmt::format("/dev_hdd0/home/%08u/savedata/%s/", userId, dirName.get_ptr()));
+	else if (userId > CELL_USERINFO_USER_MAX)
+	{
+		// ****** sysutil savedata parameter error : 137 ******
+		return {CELL_SAVEDATA_ERROR_PARAM, "137"};
+	}
+
+	if (!dirName)
+	{
+		// ****** sysutil savedata parameter error : 107 ******
+		return {CELL_SAVEDATA_ERROR_PARAM, "107"};
+	}
+
+	switch (sysutil_check_name_string(dirName.get_ptr(), 1, CELL_SAVEDATA_DIRLIST_MAX))
+	{
+	case -1:
+	{
+		// ****** sysutil savedata parameter error : 108 ******
+		return {CELL_SAVEDATA_ERROR_PARAM, "108"};
+	}
+	case -2:
+	{
+		// ****** sysutil savedata parameter error : 109 ******
+		return {CELL_SAVEDATA_ERROR_PARAM, "109"};
+	}
+	case 0: break;
+	default: ASSUME(0);
+	}
+
+	const std::string base_dir = fmt::format("/dev_hdd0/home/%08u/savedata/", userId);
+
+	if (!fs::is_dir(vfs::get(base_dir)))
+	{
+		return CELL_SAVEDATA_ERROR_NOUSER;
+	}
+
+	const std::string save_path = vfs::get(base_dir + dirName.get_ptr() + '/');
 	std::string sfo = save_path + "PARAM.SFO";
 
 	if (!fs::is_dir(save_path) && !fs::is_file(sfo))
@@ -1634,7 +1996,7 @@ static NEVER_INLINE error_code savedata_get_list_item(vm::cptr<char> dirName, vm
 		}
 
 		// get file stats, namely directory
-		strcpy_trunc(dir->dirName, dirName.get_ptr());
+		strcpy_trunc(dir->dirName, std::string_view(dirName.get_ptr()));
 		dir->atime = dir_info.atime;
 		dir->ctime = dir_info.ctime;
 		dir->mtime = dir_info.mtime;
@@ -1646,6 +2008,11 @@ static NEVER_INLINE error_code savedata_get_list_item(vm::cptr<char> dirName, vm
 
 		for (const auto& entry : fs::dir(save_path))
 		{
+			if (entry.is_directory)
+			{
+				continue;
+			}
+
 			size_kbytes += ::narrow<u32>((entry.size + 1023) / 1024); // firmware rounds this value up
 		}
 

@@ -1,6 +1,8 @@
 ﻿
 #ifdef _WIN32
+#include "stdafx.h"
 #include "xinput_pad_handler.h"
+#include "Emu/Io/pad_config.h"
 
 namespace XINPUT_INFO
 {
@@ -122,7 +124,7 @@ void xinput_pad_handler::init_config(pad_config* cfg, const std::string& name)
 	cfg->from_default();
 }
 
-void xinput_pad_handler::SetPadData(const std::string& padId, u32 largeMotor, u32 smallMotor, s32/* r*/, s32/* g*/, s32/* b*/)
+void xinput_pad_handler::SetPadData(const std::string& padId, u32 largeMotor, u32 smallMotor, s32/* r*/, s32/* g*/, s32/* b*/, bool /*battery_led*/, u32 /*battery_led_brightness*/)
 {
 	int device_number = GetDeviceNumber(padId);
 	if (device_number < 0)
@@ -144,7 +146,7 @@ int xinput_pad_handler::GetDeviceNumber(const std::string& padId)
 		return -1;
 
 	size_t pos = padId.find(m_name_string);
-	if (pos == std::string::npos)
+	if (pos == umax)
 		return -1;
 
 	int device_number = std::stoul(padId.substr(pos + 12)) - 1; // Controllers 1-n in GUI
@@ -285,7 +287,7 @@ xinput_pad_handler::PadButtonValues xinput_pad_handler::get_button_values_scp(co
 	return values;
 }
 
-std::array<int, 6> xinput_pad_handler::get_preview_values(std::unordered_map<u64, u16> data)
+pad_preview_values xinput_pad_handler::get_preview_values(std::unordered_map<u64, u16> data)
 {
 	return { data[LT], data[RT], data[LSXPos] - data[LSXNeg], data[LSYPos] - data[LSYNeg], data[RSXPos] - data[RSXNeg], data[RSYPos] - data[RSYNeg] };
 }

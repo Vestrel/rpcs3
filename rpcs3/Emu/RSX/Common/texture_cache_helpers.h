@@ -73,6 +73,14 @@ namespace rsx
 		}
 	};
 
+	struct blit_target_properties
+	{
+		bool use_dma_region;
+		u32 offset;
+		u32 width;
+		u32 height;
+	};
+
 	struct texture_cache_search_options
 	{
 		u8 lookup_mask = 0xff;
@@ -118,13 +126,13 @@ namespace rsx
 				return CELL_GCM_TEXTURE_DEPTH16;
 			}
 
-			LOG_ERROR(RSX, "Unsupported depth conversion (0x%X)", gcm_format);
+			rsx_log.error("Unsupported depth conversion (0x%X)", gcm_format);
 			return gcm_format;
 		}
 
 		static inline u32 get_sized_blit_format(bool _32_bit, bool depth_format)
 		{
-			if (LIKELY(_32_bit))
+			if (_32_bit) [[likely]]
 			{
 				return (!depth_format) ? CELL_GCM_TEXTURE_A8R8G8B8 : CELL_GCM_TEXTURE_DEPTH24_D8;
 			}
@@ -164,6 +172,64 @@ namespace rsx
 			case CELL_GCM_TEXTURE_DEPTH24_D8_FLOAT:
 				return format_type::depth_float;
 			}
+		}
+
+		static blit_target_properties get_optimal_blit_target_properties(
+			bool src_is_render_target,
+			address_range dst_range,
+			u32 dst_pitch,
+			const sizeu src_dimensions,
+			const sizeu dst_dimensions)
+		{
+			if (get_location(dst_range.start) == CELL_GCM_LOCATION_LOCAL)
+			{
+				// Check if this is a blit to the output buffer
+				// TODO: This can be used to implement reference tracking to possibly avoid downscaling
+				const auto renderer = rsx::get_current_renderer();
+				for (u32 i = 0; i < renderer->display_buffers_count; ++i)
+				{
+					const auto& buffer = renderer->display_buffers[i];
+					const u32 pitch = buffer.pitch? static_cast<u32>(buffer.pitch) : g_fxo->get<rsx::avconf>()->get_bpp() * buffer.width;
+					if (pitch != dst_pitch)
+					{
+						continue;
+					}
+
+					const auto buffer_range = address_range::start_length(rsx::constants::local_mem_base + buffer.offset, pitch * buffer.height);
+					if (dst_range.inside(buffer_range))
+					{
+						// Match found
+						return { false, buffer_range.start, buffer.width, buffer.height };
+					}
+
+					if (dst_range.overlaps(buffer_range)) [[unlikely]]
+					{
+						// The range clips the destination but does not fit inside it
+						// Use DMA stream to optimize the flush that is likely to happen when flipping
+						return { true };
+					}
+				}
+			}
+
+			if (src_is_render_target)
+			{
+				// Attempt to optimize...
+				if (dst_dimensions.width == 1280 || dst_dimensions.width == 2560) [[likely]]
+				{
+					// Optimizations table based on common width/height pairings. If we guess wrong, the upload resolver will fix it anyway
+					// TODO: Add more entries based on empirical data
+					const auto optimal_height = std::max(dst_dimensions.height, 720u);
+					return { false, 0, dst_dimensions.width, optimal_height };
+				}
+
+				if (dst_dimensions.width == src_dimensions.width)
+				{
+					const auto optimal_height = std::max(dst_dimensions.height, src_dimensions.height);
+					return { false, 0, dst_dimensions.width, optimal_height };
+				}
+			}
+
+			return { false, 0, dst_dimensions.width, dst_dimensions.height };
 		}
 
 		template<typename section_storage_type, typename copy_region_type, typename surface_store_list_type>
@@ -210,12 +276,6 @@ namespace rsx
 
 			auto add_rtt_resource = [&](auto& section, u16 slice)
 			{
-				if (section.is_depth != is_depth)
-				{
-					// TODO
-					return;
-				}
-
 				const u32 slice_begin = (slice * attr.slice_h);
 				const u32 slice_end = (slice_begin + attr.height);
 
@@ -266,12 +326,6 @@ namespace rsx
 
 			auto add_local_resource = [&](auto& section, u32 address, u16 slice, bool scaling = true)
 			{
-				if (section->is_depth_texture() != is_depth)
-				{
-					// TODO
-					return;
-				}
-
 				// Intersect this resource with the original one
 				const auto section_bpp = get_format_block_size_in_bytes(section->get_gcm_format());
 				const auto normalized_width = (section->get_width() * section_bpp) / attr.bpp;
@@ -304,7 +358,7 @@ namespace rsx
 
 				const u16 dst_w = static_cast<u16>(std::get<2>(clipped).width);
 				const u16 src_w = static_cast<u16>(dst_w * attr.bpp) / section_bpp;
-				const u16 height = static_cast<u16>(std::get<2>(clipped).height);
+				const u16 height = static_cast<u16>(dst_h);
 
 				if (scaling)
 				{
@@ -314,10 +368,10 @@ namespace rsx
 						section->get_raw_texture(),
 						surface_transform::identity,
 						0,
-						static_cast<u16>(std::get<0>(clipped).x),
-						static_cast<u16>(std::get<0>(clipped).y),
-						rsx::apply_resolution_scale(static_cast<u16>(std::get<1>(clipped).x), true),
-						rsx::apply_resolution_scale(static_cast<u16>(std::get<1>(clipped).y), true),
+						static_cast<u16>(std::get<0>(clipped).x),                                     // src.x
+						static_cast<u16>(std::get<0>(clipped).y),                                     // src.y
+						rsx::apply_resolution_scale(static_cast<u16>(std::get<1>(clipped).x), true),  // dst.x
+						rsx::apply_resolution_scale(static_cast<u16>(dst_y - slice_begin), true),     // dst.y
 						slice,
 						src_w,
 						height,
@@ -332,10 +386,10 @@ namespace rsx
 						section->get_raw_texture(),
 						surface_transform::identity,
 						0,
-						static_cast<u16>(std::get<0>(clipped).x),
-						static_cast<u16>(std::get<0>(clipped).y),
-						static_cast<u16>(std::get<1>(clipped).x),
-						static_cast<u16>(std::get<1>(clipped).y),
+						static_cast<u16>(std::get<0>(clipped).x),   // src.x
+						static_cast<u16>(std::get<0>(clipped).y),   // src.y
+						static_cast<u16>(std::get<1>(clipped).x),   // dst.x
+						static_cast<u16>(dst_y - slice_begin),      // dst.y
 						0,
 						src_w,
 						height,
@@ -357,7 +411,7 @@ namespace rsx
 			{
 				auto num_surface = out.size();
 
-				if (LIKELY(local.empty()))
+				if (local.empty()) [[likely]]
 				{
 					for (auto& section : fbos)
 					{
@@ -398,11 +452,11 @@ namespace rsx
 				if (found_slices > 0)
 				{
 					//TODO: Gather remaining sides from the texture cache or upload from cpu (too slow?)
-					LOG_ERROR(RSX, "Could not gather all required slices for cubemap/3d generation");
+					rsx_log.error("Could not gather all required slices for cubemap/3d generation");
 				}
 				else
 				{
-					LOG_WARNING(RSX, "Could not gather textures into an atlas; using CPU fallback...");
+					rsx_log.warning("Could not gather textures into an atlas; using CPU fallback...");
 				}
 			}
 		}
@@ -470,8 +524,8 @@ namespace rsx
 				verify(HERE), is_gcm_depth_format(attr2.gcm_format) == is_depth;
 			}
 
-			if (LIKELY(extended_dimension == rsx::texture_dimension_extended::texture_dimension_2d ||
-				extended_dimension == rsx::texture_dimension_extended::texture_dimension_1d))
+			if (extended_dimension == rsx::texture_dimension_extended::texture_dimension_2d ||
+				extended_dimension == rsx::texture_dimension_extended::texture_dimension_1d) [[likely]]
 			{
 				if (extended_dimension == rsx::texture_dimension_extended::texture_dimension_1d)
 				{
@@ -534,20 +588,54 @@ namespace rsx
 		{
 			verify(HERE), (select_hint & 0x1) == select_hint;
 
-			bool is_depth;
+			bool is_depth = (select_hint == 0) ? fbos.back().is_depth : local.back()->is_depth_texture();
+			bool aspect_mismatch = false;
 			auto attr2 = attr;
 
-			if (is_depth = (select_hint == 0) ? fbos.back().is_depth : local.back()->is_depth_texture();
-				is_depth)
+			// Check for mixed sources with aspect mismatch
+			// NOTE: If the last texture is a perfect match, this method would not have been called which means at least one transfer has to occur
+			if ((fbos.size() + local.size()) > 1) [[unlikely]]
 			{
+				for (const auto& tex : local)
+				{
+					if (tex->is_depth_texture() != is_depth)
+					{
+						aspect_mismatch = true;
+						break;
+					}
+				}
+
+				if (!aspect_mismatch) [[likely]]
+				{
+					for (const auto& surface : fbos)
+					{
+						if (surface.is_depth != is_depth)
+						{
+							aspect_mismatch = true;
+							break;
+						}
+					}
+				}
+			}
+
+			if (aspect_mismatch)
+			{
+				// Override with the requested format
+				is_depth = is_gcm_depth_format(attr.gcm_format);
+			}
+			else if (is_depth)
+			{
+				// Depth format textures were found. Check if the data can be bitcast without conversion.
 				if (const auto suggested_format = get_compatible_depth_format(attr.gcm_format);
 					!is_gcm_depth_format(suggested_format))
 				{
-					// Failed!
+					// Requested format cannot be directly read from a depth texture.
+					// Typeless conversion will be performed to make data accessible.
 					is_depth = false;
 				}
 				else
 				{
+					// Replace request format with one that is compatible with existing data.
 					attr2.gcm_format = suggested_format;
 				}
 			}

@@ -1,10 +1,8 @@
 ﻿#include "stdafx.h"
 #include "sys_rsx.h"
 
-#include "Emu/System.h"
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/RSX/GSRender.h"
-#include "Emu/IdManager.h"
 #include "Emu/Cell/ErrorCodes.h"
 #include "sys_event.h"
 
@@ -146,7 +144,7 @@ error_code sys_rsx_context_allocate(vm::ptr<u32> context_id, vm::ptr<u64> lpar_d
 	*lpar_driver_info = context_base + 0x100000;
 	*lpar_reports = context_base + 0x200000;
 
-	auto &reports = vm::_ref<RsxReports>(*lpar_reports);
+	auto &reports = vm::_ref<RsxReports>(vm::cast(*lpar_reports, HERE));
 	std::memset(&reports, 0, sizeof(RsxReports));
 
 	for (int i = 0; i < 64; ++i)
@@ -166,7 +164,7 @@ error_code sys_rsx_context_allocate(vm::ptr<u32> context_id, vm::ptr<u64> lpar_d
 		reports.report[i].pad = -1;
 	}
 
-	auto &driverInfo = vm::_ref<RsxDriverInfo>(*lpar_driver_info);
+	auto &driverInfo = vm::_ref<RsxDriverInfo>(vm::cast(*lpar_driver_info, HERE));
 
 	std::memset(&driverInfo, 0, sizeof(RsxDriverInfo));
 
@@ -178,17 +176,15 @@ error_code sys_rsx_context_allocate(vm::ptr<u32> context_id, vm::ptr<u64> lpar_d
 	driverInfo.reportsNotifyOffset = 0x1000;
 	driverInfo.reportsOffset = 0;
 	driverInfo.reportsReportOffset = 0x1400;
-	driverInfo.systemModeFlags = system_mode;
+	driverInfo.systemModeFlags = static_cast<u32>(system_mode);
 	driverInfo.hardware_channel = 1; // * i think* this 1 for games, 0 for vsh
 
-	rsx_cfg->driver_info = *lpar_driver_info;
+	rsx_cfg->driver_info = vm::cast(*lpar_driver_info, HERE);
 
-	auto &dmaControl = vm::_ref<RsxDmaControl>(*lpar_dma_control);
+	auto &dmaControl = vm::_ref<RsxDmaControl>(vm::cast(*lpar_dma_control, HERE));
 	dmaControl.get = 0;
 	dmaControl.put = 0;
 	dmaControl.ref = 0; // Set later to -1 by cellGcmSys
-
-	memset(&RSXIOMem, 0xFF, sizeof(RSXIOMem));
 
 	if (false/*system_mode == CELL_GCM_SYSTEM_MODE_IOMAP_512MB*/)
 		rsx::get_current_renderer()->main_mem_size = 0x20000000; //512MB
@@ -208,9 +204,10 @@ error_code sys_rsx_context_allocate(vm::ptr<u32> context_id, vm::ptr<u64> lpar_d
 	const auto render = rsx::get_current_renderer();
 	render->display_buffers_count = 0;
 	render->current_display_buffer = 0;
-	render->label_addr = *lpar_reports;
+	render->label_addr = vm::cast(*lpar_reports, HERE);
 	render->device_addr = rsx_cfg->device_addr;
-	render->init(*lpar_dma_control);
+	render->local_mem_size = rsx_cfg->memory_size;
+	render->init(vm::cast(*lpar_dma_control, HERE));
 
 	rsx_cfg->context_base = context_base;
 	*context_id = 0x55555555;
@@ -250,8 +247,10 @@ error_code sys_rsx_context_iomap(u32 context_id, u32 io, u32 ea, u32 size, u64 f
 {
 	sys_rsx.warning("sys_rsx_context_iomap(context_id=0x%x, io=0x%x, ea=0x%x, size=0x%x, flags=0x%llx)", context_id, io, ea, size, flags);
 
+	const auto render = rsx::get_current_renderer();
+
 	if (!size || io & 0xFFFFF || ea + u64{size} > rsx::constants::local_mem_base || ea & 0xFFFFF || size & 0xFFFFF ||
-		context_id != 0x55555555 || rsx::get_current_renderer()->main_mem_size < io + u64{size})
+		context_id != 0x55555555 || render->main_mem_size < io + u64{size})
 	{
 		return CELL_EINVAL;
 	}
@@ -272,9 +271,13 @@ error_code sys_rsx_context_iomap(u32 context_id, u32 io, u32 ea, u32 size, u64 f
 
 	for (u32 i = 0; i < size; i++)
 	{
-		const u32 prev_ea = std::exchange(RSXIOMem.ea[io + i].raw(), ea + i);
-		if (prev_ea < 0xC00) RSXIOMem.io[prev_ea].raw() = 0xFFFF; // Clear previous mapping if exists
-		RSXIOMem.io[ea + i].raw() = io + i;
+		auto& table = render->iomap_table;
+
+		// TODO: Investigate relaxed memory ordering
+		const u32 prev_ea = table.ea[io + i];
+		table.ea[io + i].release((ea + i) << 20);
+		if (prev_ea + 1) table.io[prev_ea >> 20].release(-1); // Clear previous mapping if exists
+		table.io[ea + i].release((io + i) << 20);
 	}
 
 	return CELL_OK;
@@ -290,8 +293,10 @@ error_code sys_rsx_context_iounmap(u32 context_id, u32 io, u32 size)
 {
 	sys_rsx.warning("sys_rsx_context_iounmap(context_id=0x%x, io=0x%x, size=0x%x)", context_id, io, size);
 
+	const auto render = rsx::get_current_renderer();
+
 	if (!size || size & 0xFFFFF || io & 0xFFFFF || context_id != 0x55555555 ||
-			rsx::get_current_renderer()->main_mem_size < io + u64{size})
+			render->main_mem_size < io + u64{size})
 	{
 		return CELL_EINVAL;
 	}
@@ -300,12 +305,13 @@ error_code sys_rsx_context_iounmap(u32 context_id, u32 io, u32 size)
 
 	std::scoped_lock lock(s_rsxmem_mtx);
 
-	const u32 end = (io >>= 20) + (size >>= 20);
-
-	while (io < end)
+	for (const u32 end = (io >>= 20) + (size >>= 20); io < end;)
 	{
-		const u32 ea_entry = std::exchange(RSXIOMem.ea[io++].raw(), 0xFFFF);
-		if (ea_entry < 0xC00) RSXIOMem.io[ea_entry].raw() = 0xFFFF;
+		auto& table = render->iomap_table;
+
+		const u32 ea_entry = table.ea[io];
+		table.ea[io++].release(-1);
+		if (ea_entry + 1) table.io[ea_entry >> 20].release(-1);
 	}
 
 	return CELL_OK;
@@ -344,9 +350,9 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 	{
 	case 0x001: // FIFO
 		render->pause();
-		render->ctrl->get = a3;
-		render->ctrl->put = a4;
-		render->restore_point = a3;
+		render->ctrl->get = static_cast<u32>(a3);
+		render->ctrl->put = static_cast<u32>(a4);
+		render->restore_point = static_cast<u32>(a3);
 		render->unpause();
 		break;
 
@@ -377,7 +383,7 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 			// sanity check, the head should have a 'queued' buffer on it, and it should have been previously 'queued'
 			const u32 sanity_check = 0x40000000 & (1 << flip_idx);
 			if ((driverInfo.head[a3].flipFlags & sanity_check) != sanity_check)
-				LOG_ERROR(RSX, "Display Flip Queued: Flipping non previously queued buffer 0x%llx", a4);
+				rsx_log.error("Display Flip Queued: Flipping non previously queued buffer 0x%llx", a4);
 		}
 		else
 		{
@@ -391,7 +397,7 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 			}
 			if (flip_idx == ~0u)
 			{
-				LOG_ERROR(RSX, "Display Flip: Couldn't find display buffer offset, flipping 0. Offset: 0x%x", a4);
+				rsx_log.error("Display Flip: Couldn't find display buffer offset, flipping 0. Offset: 0x%x", a4);
 				flip_idx = 0;
 			}
 		}
@@ -402,7 +408,7 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 
 	case 0x103: // Display Queue
 	{
-		driverInfo.head[a3].lastQueuedBufferId = a4;
+		driverInfo.head[a3].lastQueuedBufferId = static_cast<u32>(a4);
 		driverInfo.head[a3].flipFlags |= 0x40000000 | (1 << a4);
 
 		// NOTE: There currently seem to only be 2 active heads on PS3
@@ -411,7 +417,7 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 		const u64 shift_offset = (a3 + 5);
 		sys_event_port_send(rsx_cfg->rsx_event_port, 0, (1ull << shift_offset), 0);
 
-		render->on_frame_end(a4);
+		render->on_frame_end(static_cast<u32>(a4));
 	}
 	break;
 
@@ -459,7 +465,7 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 		}
 
 		u32 flipStatus = driverInfo.head[a3].flipFlags;
-		flipStatus = (flipStatus & a4) | a5;
+		flipStatus = (flipStatus & static_cast<u32>(a4)) | static_cast<u32>(a5);
 		driverInfo.head[a3].flipFlags = flipStatus;
 	}
 	break;
@@ -479,7 +485,7 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 		// When tile is going to be unbinded, we can use it as a hint that the address will no longer be used as a surface and can be removed/invalidated
 		// Todo: There may be more checks such as format/size/width can could be done
 		if (tile.binded && a5 == 0)
-			render->notify_tile_unbound(a3);
+			render->notify_tile_unbound(static_cast<u32>(a3));
 
 		tile.location = ((a4 >> 32) & 0xF) - 1;
 		tile.offset = ((((a4 >> 32) & 0x7FFFFFFF) >> 16) * 0x10000);
@@ -563,7 +569,7 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 		// 'custom' invalid package id for now
 		// as i think we need custom lv1 interrupts to handle this accurately
 		// this also should probly be set by rsxthread
-		driverInfo.userCmdParam = a4;
+		driverInfo.userCmdParam = static_cast<u32>(a4);
 		sys_event_port_send(rsx_cfg->rsx_event_port, 0, (1 << 7), 0);
 		break;
 
@@ -604,7 +610,8 @@ error_code sys_rsx_device_map(vm::ptr<u64> dev_addr, vm::ptr<u64> a2, u32 dev_id
 			return CELL_ENOMEM;
 		}
 
-		rsx_cfg->device_addr = *dev_addr = addr;
+		*dev_addr = addr;
+		rsx_cfg->device_addr = addr;
 		return CELL_OK;
 	}
 
