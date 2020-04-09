@@ -416,6 +416,8 @@ void spu_cache::initialize()
 		}
 	}
 
+	u32 worker_count = 0;
+
 	if (g_cfg.core.spu_decoder == spu_decoder_type::asmjit || g_cfg.core.spu_decoder == spu_decoder_type::llvm)
 	{
 		// Initialize progress dialog (wait for previous progress done)
@@ -426,9 +428,11 @@ void spu_cache::initialize()
 
 		g_progr = "Building SPU cache...";
 		g_progr_ptotal += ::size32(func_list);
+
+		worker_count = Emu.GetMaxThreads();
 	}
 
-	named_thread_group workers("SPU Worker ", Emu.GetMaxThreads(), [&]() -> uint
+	named_thread_group workers("SPU Worker ", worker_count, [&]() -> uint
 	{
 		// Initialize compiler instances for parallel compilation
 		std::unique_ptr<spu_recompiler_base> compiler;
@@ -464,6 +468,29 @@ void spu_cache::initialize()
 			// Get data start
 			const u32 start = func.lower_bound;
 			const u32 size0 = ::size32(func.data);
+
+			be_t<u64> hash_start;
+			{
+				sha1_context ctx;
+				u8 output[20];
+
+				sha1_starts(&ctx);
+				sha1_update(&ctx, reinterpret_cast<const u8*>(func.data.data()), func.data.size() * 4);
+				sha1_finish(&ctx, output);
+				std::memcpy(&hash_start, output, sizeof(hash_start));
+			}
+
+			// Check hash against allowed bounds
+			const bool inverse_bounds = g_cfg.core.spu_llvm_lower_bound > g_cfg.core.spu_llvm_upper_bound;
+
+			if ((!inverse_bounds && (hash_start < g_cfg.core.spu_llvm_lower_bound || hash_start > g_cfg.core.spu_llvm_upper_bound)) ||
+				(inverse_bounds && (hash_start < g_cfg.core.spu_llvm_lower_bound && hash_start > g_cfg.core.spu_llvm_upper_bound)))
+			{
+				spu_log.error("[Debug] Skipped function %s", fmt::base57(hash_start));
+				g_progr_pdone++;
+				result++;
+				continue;
+			}
 
 			// Initialize LS with function data only
 			for (u32 i = 0, pos = start; i < size0; i++, pos += 4)
@@ -3229,6 +3256,9 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 	// Patchpoint unique id
 	u32 m_pp_id = 0;
 
+	// Next opcode
+	u32 m_next_op = 0;
+
 	// Current function (chunk)
 	llvm::Function* m_function;
 
@@ -3593,7 +3623,7 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 		{
 			if (m_block_info[target / 4])
 			{
-				spu_log.error("[0x%x] Predecessor not found for target 0x%x (chunk=0x%x, entry=0x%x, size=%u)", m_pos, target, m_entry, m_function_queue[0], m_size / 4);
+				spu_log.error("[%s] [0x%x] Predecessor not found for target 0x%x (chunk=0x%x, entry=0x%x, size=%u)", m_hash, m_pos, target, m_entry, m_function_queue[0], m_size / 4);
 			}
 
 			const auto cblock = m_ir->GetInsertBlock();
@@ -4598,9 +4628,15 @@ public:
 
 					if (!op)
 					{
-						spu_log.error("Unexpected fallthrough to 0x%x (chunk=0x%x, entry=0x%x)", m_pos, m_entry, m_function_queue[0]);
+						spu_log.error("[%s] Unexpected fallthrough to 0x%x (chunk=0x%x, entry=0x%x)", m_hash, m_pos, m_entry, m_function_queue[0]);
 						break;
 					}
+
+					// Set variable for set_link()
+					if (m_pos + 4 >= end)
+						m_next_op = 0;
+					else
+						m_next_op = func.data[(m_pos - start) / 4 + 1];
 
 					// Execute recompiler function (TODO)
 					(this->*decode(op))({op});
@@ -4621,7 +4657,7 @@ public:
 
 							if (tfound == m_targets.end() || tfound->second.find_first_of(target) + 1 == 0)
 							{
-								spu_log.error("Unregistered fallthrough to 0x%x (chunk=0x%x, entry=0x%x)", target, m_entry, m_function_queue[0]);
+								spu_log.error("[%s] Unregistered fallthrough to 0x%x (chunk=0x%x, entry=0x%x)", m_hash, target, m_entry, m_function_queue[0]);
 							}
 						}
 					}
@@ -6462,10 +6498,25 @@ public:
 		set_vr(op.rt, fshl(a, zshuffle(a, 4, 0, 1, 2), b));
 	}
 
+	static __m128i exec_rotqby(__m128i a, u8 b)
+	{
+		alignas(32) const __m128i buf[2]{a, a};
+		return _mm_loadu_si128(reinterpret_cast<const __m128i*>(reinterpret_cast<const u8*>(buf) + (16 - (b & 0xf))));
+	}
+
 	void ROTQBY(spu_opcode_t op)
 	{
 		const auto a = get_vr<u8[16]>(op.ra);
 		const auto b = get_vr<u8[16]>(op.rb);
+
+		if (!m_use_ssse3)
+		{
+			value_t<u8[16]> r;
+			r.value = call("spu_rotqby", &exec_rotqby, a.value, eval(extract(b, 12)).value);
+			set_vr(op.rt, r);
+			return;
+		}
+
 		const auto sc = build<u8[16]>(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
 		const auto sh = eval((sc - zshuffle(b, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12)) & 0xf);
 		set_vr(op.rt, pshufb(a, sh));
@@ -7649,13 +7700,13 @@ public:
 	void make_store_ls(value_t<u64> addr, value_t<u8[16]> data)
 	{
 		const auto bswapped = zshuffle(data, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0);
-		m_ir->CreateStore(bswapped.eval(m_ir), m_ir->CreateBitCast(m_ir->CreateGEP(m_lsptr, addr.value), get_type<u8(*)[16]>()));
+		m_ir->CreateStore(bswapped.eval(m_ir), m_ir->CreateBitCast(m_ir->CreateGEP(m_lsptr, addr.value), get_type<u8(*)[16]>()), true);
 	}
 
 	auto make_load_ls(value_t<u64> addr)
 	{
 		value_t<u8[16]> data;
-		data.value = m_ir->CreateLoad(m_ir->CreateBitCast(m_ir->CreateGEP(m_lsptr, addr.value), get_type<u8(*)[16]>()));
+		data.value = m_ir->CreateLoad(m_ir->CreateBitCast(m_ir->CreateGEP(m_lsptr, addr.value), get_type<u8(*)[16]>()), true);
 		return zshuffle(data, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0);
 	}
 
@@ -7891,23 +7942,27 @@ public:
 		}
 
 		m_ir->CreateStore(addr.value, spu_ptr<u32>(&spu_thread::pc));
-		const auto type = m_finfo->chunk->getFunctionType()->getPointerTo()->getPointerTo();
 
 		if (ret && g_cfg.core.spu_block_size >= spu_block_size_type::mega)
 		{
 			// Compare address stored in stack mirror with addr
 			const auto stack0 = eval(zext<u64>(sp) + ::offset32(&spu_thread::stack_mirror));
 			const auto stack1 = eval(stack0 + 8);
-			const auto _ret = m_ir->CreateLoad(m_ir->CreateBitCast(m_ir->CreateGEP(m_thread, stack0.value), type));
+			const auto _ret = m_ir->CreateLoad(m_ir->CreateBitCast(m_ir->CreateGEP(m_thread, stack0.value), get_type<u64*>()));
 			const auto link = m_ir->CreateLoad(m_ir->CreateBitCast(m_ir->CreateGEP(m_thread, stack1.value), get_type<u64*>()));
 			const auto fail = llvm::BasicBlock::Create(m_context, "", m_function);
 			const auto done = llvm::BasicBlock::Create(m_context, "", m_function);
-			m_ir->CreateCondBr(m_ir->CreateICmpEQ(addr.value, m_ir->CreateTrunc(link, get_type<u32>())), done, fail, m_md_likely);
+			const auto next = llvm::BasicBlock::Create(m_context, "", m_function);
+			m_ir->CreateCondBr(m_ir->CreateICmpEQ(addr.value, m_ir->CreateTrunc(link, get_type<u32>())), next, fail, m_md_likely);
+			m_ir->SetInsertPoint(next);
+			const auto cmp2 = m_ir->CreateLoad(m_ir->CreateBitCast(m_ir->CreateGEP(m_lsptr, addr.value), get_type<u32*>()));
+			m_ir->CreateCondBr(m_ir->CreateICmpEQ(cmp2, m_ir->CreateTrunc(_ret, get_type<u32>())), done, fail, m_md_likely);
 			m_ir->SetInsertPoint(done);
 
 			// Clear stack mirror and return by tail call to the provided return address
 			m_ir->CreateStore(splat<u64[2]>(-1).eval(m_ir), m_ir->CreateBitCast(m_ir->CreateGEP(m_thread, stack0.value), get_type<u64(*)[2]>()));
-			tail_chunk(_ret, m_ir->CreateTrunc(m_ir->CreateLShr(link, 32), get_type<u32>()));
+			const auto targ = m_ir->CreateAdd(m_ir->CreateLShr(_ret, 32), m_ir->getInt64(reinterpret_cast<u64>(jit_runtime::alloc(0, 0))));
+			tail_chunk(m_ir->CreateIntToPtr(targ, m_finfo->chunk->getFunctionType()->getPointerTo()), m_ir->CreateTrunc(m_ir->CreateLShr(link, 32), get_type<u32>()));
 			m_ir->SetInsertPoint(fail);
 		}
 
@@ -8024,7 +8079,7 @@ public:
 			if (targets.empty())
 			{
 				// Emergency exit
-				spu_log.error("[0x%05x] No jump table targets at 0x%05x (%u)", m_entry, m_pos, tfound->second.size());
+				spu_log.error("[%s] [0x%05x] No jump table targets at 0x%05x (%u)", m_hash, m_entry, m_pos, tfound->second.size());
 				m_ir->CreateBr(add_block_indirect(op, addr));
 				return;
 			}
@@ -8271,8 +8326,10 @@ public:
 			const auto pfunc = add_function(m_pos + 4);
 			const auto stack0 = eval(zext<u64>(extract(get_reg_fixed(1), 3) & 0x3fff0) + ::offset32(&spu_thread::stack_mirror));
 			const auto stack1 = eval(stack0 + 8);
+			const auto rel_ptr = m_ir->CreateSub(m_ir->CreatePtrToInt(pfunc->chunk, get_type<u64>()), m_ir->getInt64(reinterpret_cast<u64>(jit_runtime::alloc(0, 0))));
+			const auto ptr_plus_op = m_ir->CreateOr(m_ir->CreateShl(rel_ptr, 32), m_ir->getInt64(m_next_op));
 			const auto base_plus_pc = m_ir->CreateOr(m_ir->CreateShl(m_ir->CreateZExt(m_base_pc, get_type<u64>()), 32), m_ir->getInt64(m_pos + 4));
-			m_ir->CreateStore(pfunc->chunk, m_ir->CreateBitCast(m_ir->CreateGEP(m_thread, stack0.value), pfunc->chunk->getType()->getPointerTo()));
+			m_ir->CreateStore(ptr_plus_op, m_ir->CreateBitCast(m_ir->CreateGEP(m_thread, stack0.value), get_type<u64*>()));
 			m_ir->CreateStore(base_plus_pc, m_ir->CreateBitCast(m_ir->CreateGEP(m_thread, stack1.value), get_type<u64*>()));
 		}
 	}
@@ -8306,11 +8363,9 @@ std::unique_ptr<spu_recompiler_base> spu_recompiler_base::make_llvm_recompiler(u
 
 #endif
 
-// SPU LLVM recompiler thread context
-struct spu_llvm
+struct spu_llvm_worker
 {
-	// Workload
-	lf_queue<std::pair<const u64, spu_item*>> registered;
+	lf_queue<std::pair<u64, const spu_program*>> registered;
 
 	void operator()()
 	{
@@ -8321,6 +8376,77 @@ struct spu_llvm
 		// Fake LS
 		std::vector<be_t<u32>> ls(0x10000);
 
+		for (auto* prog : registered)
+		{
+			if (thread_ctrl::state() == thread_state::aborting)
+			{
+				break;
+			}
+
+			if (!prog)
+			{
+				continue;
+			}
+
+			const auto& func = *prog->second;
+
+			// Get data start
+			const u32 start = func.lower_bound;
+			const u32 size0 = ::size32(func.data);
+
+			// Initialize LS with function data only
+			for (u32 i = 0, pos = start; i < size0; i++, pos += 4)
+			{
+				ls[pos / 4] = std::bit_cast<be_t<u32>>(func.data[i]);
+			}
+
+			// Call analyser
+			spu_program func2 = compiler->analyse(ls.data(), func.entry_point);
+
+			if (func2 != func)
+			{
+				spu_log.error("[0x%05x] SPU Analyser failed, %u vs %u", func2.entry_point, func2.data.size(), size0);
+			}
+			else if (const auto target = compiler->compile(std::move(func2)))
+			{
+				// Redirect old function (TODO: patch in multiple places)
+				const s64 rel = reinterpret_cast<u64>(target) - prog->first - 5;
+
+				union
+				{
+					u8 bytes[8];
+					u64 result;
+				};
+
+				bytes[0] = 0xe9; // jmp rel32
+				std::memcpy(bytes + 1, &rel, 4);
+				bytes[5] = 0x90;
+				bytes[6] = 0x90;
+				bytes[7] = 0x90;
+
+				atomic_storage<u64>::release(*reinterpret_cast<u64*>(prog->first), result);
+			}
+			else
+			{
+				spu_log.fatal("[0x%05x] Compilation failed.", func.entry_point);
+				Emu.Pause();
+				return;
+			}
+
+			// Clear fake LS
+			std::memset(ls.data() + start / 4, 0, 4 * (size0 - 1));
+		}
+	}
+};
+
+// SPU LLVM recompiler thread context
+struct spu_llvm
+{
+	// Workload
+	lf_queue<std::pair<const u64, spu_item*>> registered;
+
+	void operator()()
+	{
 		// To compile (hash -> item)
 		std::unordered_multimap<u64, spu_item*, value_hash<u64>> enqueued;
 
@@ -8367,6 +8493,17 @@ struct spu_llvm
 			}
 		});
 
+		u32 worker_count = 1;
+
+		if (uint hc = std::thread::hardware_concurrency(); hc >= 12)
+		{
+			worker_count = hc - 10;
+		}
+
+		u32 worker_index = 0;
+
+		named_thread_group<spu_llvm_worker> workers("SPUW.", worker_count);
+
 		while (thread_ctrl::state() != thread_state::aborting)
 		{
 			for (const auto& pair : registered.pop_all())
@@ -8412,51 +8549,8 @@ struct spu_llvm
 			// Remove item from the queue
 			enqueued.erase(found_it);
 
-			// Get data start
-			const u32 start = func.lower_bound;
-			const u32 size0 = ::size32(func.data);
-
-			// Initialize LS with function data only
-			for (u32 i = 0, pos = start; i < size0; i++, pos += 4)
-			{
-				ls[pos / 4] = std::bit_cast<be_t<u32>>(func.data[i]);
-			}
-
-			// Call analyser
-			spu_program func2 = compiler->analyse(ls.data(), func.entry_point);
-
-			if (func2 != func)
-			{
-				spu_log.error("[0x%05x] SPU Analyser failed, %u vs %u", func2.entry_point, func2.data.size(), size0);
-			}
-			else if (const auto target = compiler->compile(std::move(func2)))
-			{
-				// Redirect old function (TODO: patch in multiple places)
-				const s64 rel = reinterpret_cast<u64>(target) - reinterpret_cast<u64>(_old) - 5;
-
-				union
-				{
-					u8 bytes[8];
-					u64 result;
-				};
-
-				bytes[0] = 0xe9; // jmp rel32
-				std::memcpy(bytes + 1, &rel, 4);
-				bytes[5] = 0x90;
-				bytes[6] = 0x90;
-				bytes[7] = 0x90;
-
-				atomic_storage<u64>::release(*reinterpret_cast<u64*>(_old), result);
-			}
-			else
-			{
-				spu_log.fatal("[0x%05x] Compilation failed.", func.entry_point);
-				Emu.Pause();
-				return;
-			}
-
-			// Clear fake LS
-			std::memset(ls.data() + start / 4, 0, 4 * (size0 - 1));
+			// Push the workload
+			(workers.begin() + (worker_index++ % worker_count))->registered.push(reinterpret_cast<u64>(_old), &func);
 		}
 	}
 
@@ -8796,7 +8890,15 @@ struct spu_fast : public spu_recompiler_base
 		// Install pointer carefully
 		const bool added = !add_loc->compiled && add_loc->compiled.compare_and_swap_test(nullptr, fn);
 
-		if (added)
+		// Check hash against allowed bounds
+		const bool inverse_bounds = g_cfg.core.spu_llvm_lower_bound > g_cfg.core.spu_llvm_upper_bound;
+
+		if ((!inverse_bounds && (m_hash_start < g_cfg.core.spu_llvm_lower_bound || m_hash_start > g_cfg.core.spu_llvm_upper_bound)) ||
+			(inverse_bounds && (m_hash_start < g_cfg.core.spu_llvm_lower_bound && m_hash_start > g_cfg.core.spu_llvm_upper_bound)))
+		{
+			spu_log.error("[Debug] Skipped function %s", fmt::base57(be_t<u64>{m_hash_start}));
+		}
+		else if (added)
 		{
 			// Send work to LLVM compiler thread
 			g_fxo->get<spu_llvm_thread>()->registered.push(m_hash_start, add_loc);

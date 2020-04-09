@@ -83,7 +83,44 @@ bool cfg::try_to_int64(s64* out, const std::string& value, s64 min, s64 max)
 
 	if (result < min || result > max)
 	{
-		if (out) cfg_log.error("cfg::try_to_int('%s'): out of bounds (%lld..%lld)", value, min, max);
+		if (out) cfg_log.error("cfg::try_to_int('%s'): out of bounds (%d..%d)", value, min, max);
+		return false;
+	}
+
+	if (out) *out = result;
+	return true;
+}
+
+std::vector<std::string> cfg::make_uint_range(u64 min, u64 max)
+{
+	return {std::to_string(min), std::to_string(max)};
+}
+
+bool cfg::try_to_uint64(u64* out, const std::string& value, u64 min, u64 max)
+{
+	u64 result;
+	const char* start = &value.front();
+	const char* end = &value.back() + 1;
+	int base = 10;
+
+	if (start[0] == '0' && (start[1] == 'x' || start[1] == 'X'))
+	{
+		// Limited hex support
+		base = 16;
+		start += 2;
+	}
+
+	const auto ret = std::from_chars(start, end, result, base);
+
+	if (ret.ec != std::errc() || ret.ptr != end)
+	{
+		if (out) cfg_log.error("cfg::try_to_int('%s'): invalid integer", value);
+		return false;
+	}
+
+	if (result < min || result > max)
+	{
+		if (out) cfg_log.error("cfg::try_to_int('%s'): out of bounds (%u..%u)", value, min, max);
 		return false;
 	}
 
@@ -289,7 +326,7 @@ void cfg::decode(const YAML::Node& data, cfg::_base& rhs, bool dynamic)
 
 		if (YAML::convert<std::string>::decode(data, value))
 		{
-			rhs.from_string(value);
+			rhs.from_string(value, dynamic);
 		}
 
 		break; // ???
@@ -344,12 +381,7 @@ void cfg::set_entry::from_default()
 
 void cfg::log_entry::set_map(std::map<std::string, logs::level>&& map)
 {
-	logs::reset();
-
-	for (auto&& pair : (m_map = std::move(map)))
-	{
-		logs::set_level(pair.first, pair.second);
-	}
+	m_map = std::move(map);
 }
 
 void cfg::log_entry::from_default()

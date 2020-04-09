@@ -75,6 +75,24 @@ bool utils::has_clwb()
 	return g_value;
 }
 
+bool utils::has_invariant_tsc()
+{
+	static const bool g_value = get_cpuid(0, 0)[0] >= 0x7 && (get_cpuid(0x80000007, 0)[3] & 0x100) == 0x100;
+	return g_value;
+}
+
+bool utils::has_fma3()
+{
+	static const bool g_value = get_cpuid(0, 0)[0] >= 0x1 && get_cpuid(1, 0)[2] & 0x1000;
+	return g_value;
+}
+
+bool utils::has_fma4()
+{
+	static const bool g_value = get_cpuid(0, 0)[0] >= 0x7 && (get_cpuid(0x80000001, 0)[2] & 0x10000) == 0x10000;
+	return g_value;
+}
+
 std::string utils::get_cpu_brand()
 {
 	std::string brand;
@@ -142,6 +160,24 @@ std::string utils::get_system_info()
 		}
 	}
 
+	if (has_fma3() || has_fma4())
+	{
+		result += " | FMA";
+
+		if (has_fma3() && has_fma4())
+		{
+			result += "3+4";
+		}
+		else if (has_fma3())
+		{
+			result += "3";
+		}
+		else if (has_fma4())
+		{
+			result += "4";
+		}
+	}
+
 	if (has_rtm())
 	{
 		result += " | TSX";
@@ -155,7 +191,6 @@ std::string utils::get_system_info()
 		{
 			result += " disabled by default";
 		}
-
 	}
 
 	return result;
@@ -227,17 +262,74 @@ std::string utils::get_OS_version()
 	return output;
 }
 
+static constexpr ullong round_tsc(ullong val)
+{
+	return ::rounded_div(val, 20'000'000) * 20'000'000;
+}
+
 ullong utils::get_tsc_freq()
 {
+	static const ullong cal_tsc = []() -> ullong
+	{
+		if (!has_invariant_tsc())
+			return 0;
 #ifdef _WIN32
-	LARGE_INTEGER freq;
-	if (!QueryPerformanceFrequency(&freq) || freq.QuadPart > 9'999'999)
-		return 0;
-	return freq.QuadPart * 1024;
+		LARGE_INTEGER freq;
+		if (!QueryPerformanceFrequency(&freq))
+			return 0;
+
+		if (freq.QuadPart <= 9'999'999)
+			return round_tsc(freq.QuadPart * 1024);
+
+		const ullong timer_freq = freq.QuadPart;
+		Sleep(1);
 #else
-	// TODO
-	return 0;
+		const ullong timer_freq = 1'000'000'000;
+		ullong sec_base = 0;
+		usleep(200);
 #endif
+
+		// Calibrate TSC
+		constexpr int samples = 40;
+		ullong rdtsc_data[samples];
+		ullong timer_data[samples];
+		ullong rdtsc_diff[samples - 1];
+		ullong timer_diff[samples - 1];
+
+		for (int i = 0; i < samples; i++)
+		{
+			rdtsc_data[i] = (_mm_lfence(), __rdtsc());
+			if (i > 0)
+				rdtsc_diff[i - 1] = rdtsc_data[i] - rdtsc_data[i - 1];
+#ifdef _WIN32
+			LARGE_INTEGER ctr;
+			QueryPerformanceCounter(&ctr);
+			timer_data[i] = ctr.QuadPart;
+			Sleep(1);
+#else
+			struct timespec ts;
+			clock_gettime(CLOCK_MONOTONIC, &ts);
+			if (i == 0)
+				sec_base = ts.tv_sec;
+			timer_data[i] = ts.tv_nsec + (ts.tv_sec - sec_base) * 1'000'000'000;
+			usleep(200);
+#endif
+			if (i > 0)
+				timer_diff[i - 1] = timer_data[i] - timer_data[i - 1];
+		}
+
+		// Compute average TSC
+		ullong acc = 0;
+		for (int i = 0; i < samples - 1; i++)
+		{
+			acc += rdtsc_diff[i] * timer_freq / timer_diff[i];
+		}
+
+		// Rounding
+		return round_tsc(acc / (samples - 1));
+	}();
+
+	return cal_tsc;
 }
 
 u64 utils::get_total_memory()

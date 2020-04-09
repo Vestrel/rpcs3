@@ -22,7 +22,7 @@ struct RsxDriverInfo
 	struct Head
 	{
 		be_t<u64> lastFlipTime;    // 0x0 last flip time
-		be_t<u32> flipFlags;       // 0x8 flags to handle flip/queue
+		atomic_be_t<u32> flipFlags; // 0x8 flags to handle flip/queue
 		be_t<u32> offset;          // 0xC
 		be_t<u32> flipBufferId;    // 0x10
 		be_t<u32> lastQueuedBufferId; // 0x14 todo: this is definately not this variable but its 'unused' so im using it for queueId to pass to flip handler
@@ -30,14 +30,14 @@ struct RsxDriverInfo
 		be_t<u32> unk6;            // 0x18 possible low bits of time stamp?  used in getlastVBlankTime
 		be_t<u64> lastSecondVTime; // 0x20 last time for second vhandler freq
 		be_t<u64> unk4;            // 0x28
-		be_t<u64> vBlankCount;     // 0x30
+		atomic_be_t<u64> vBlankCount;     // 0x30
 		be_t<u32> unk;             // 0x38 possible u32, 'flip field', top/bottom for interlaced
 		be_t<u32> unk5;            // 0x3C possible high bits of time stamp? used in getlastVBlankTime
 	} head[8]; // size = 0x40, 0x200
 
 	be_t<u32> unk7;          // 0x12B8
 	be_t<u32> unk8;          // 0x12BC
-	be_t<u32> handlers;      // 0x12C0 -- flags showing which handlers are set
+	atomic_be_t<u32> handlers; // 0x12C0 -- flags showing which handlers are set
 	be_t<u32> unk9;          // 0x12C4
 	be_t<u32> unk10;         // 0x12C8
 	be_t<u32> userCmdParam;  // 0x12CC
@@ -60,6 +60,18 @@ enum : u64
 {
 	// Unused
 	SYS_RSX_IO_MAP_IS_STRICT = 1ull << 60
+};
+
+// Unofficial event names
+enum : u64
+{
+	//SYS_RSX_EVENT_GRAPHICS_ERROR = 1 << 0,
+	SYS_RSX_EVENT_VBLANK = 1 << 1,
+	SYS_RSX_EVENT_FLIP_BASE = 1 << 3,
+	SYS_RSX_EVENT_QUEUE_BASE = 1 << 5,
+	SYS_RSX_EVENT_USER_CMD = 1 << 7,
+	SYS_RSX_EVENT_SECOND_VBLANK_BASE = 1 << 10,
+	SYS_RSX_EVENT_UNMAPPED_BASE = 1ull << 32,
 };
 
 struct RsxDmaControl
@@ -114,6 +126,9 @@ struct lv2_rsx_config
 	u32 context_base{};
 	u32 device_addr{};
 	u32 driver_info{};
+	u32 dma_address{};
+
+	void send_event(u64, u64, u64) const;
 };
 
 // SysCalls

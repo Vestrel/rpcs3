@@ -56,21 +56,21 @@
               <item>
                <widget class="QRadioButton" name="ppu_precise">
                 <property name="text">
-                 <string>Interpreter (precise)</string>
+                 <string notr="true">Interpreter (precise)</string>
                 </property>
                </widget>
               </item>
               <item>
                <widget class="QRadioButton" name="ppu_fast">
                 <property name="text">
-                 <string>Interpreter (fast)</string>
+                 <string notr="true">Interpreter (fast)</string>
                 </property>
                </widget>
               </item>
               <item>
                <widget class="QRadioButton" name="ppu_llvm">
                 <property name="text">
-                 <string>LLVM Recompiler (fastest)</string>
+                 <string notr="true">LLVM Recompiler (fastest)</string>
                 </property>
                </widget>
               </item>
@@ -86,28 +86,28 @@
               <item>
                <widget class="QRadioButton" name="spu_precise">
                 <property name="text">
-                 <string>Interpreter (precise)</string>
+                 <string notr="true">Interpreter (precise)</string>
                 </property>
                </widget>
               </item>
               <item>
                <widget class="QRadioButton" name="spu_fast">
                 <property name="text">
-                 <string>Interpreter (fast)</string>
+                 <string notr="true">Interpreter (fast)</string>
                 </property>
                </widget>
               </item>
               <item>
                <widget class="QRadioButton" name="spu_asmjit">
                 <property name="text">
-                 <string>ASMJIT Recompiler (faster)</string>
+                 <string notr="true">ASMJIT Recompiler (faster)</string>
                 </property>
                </widget>
               </item>
               <item>
                <widget class="QRadioButton" name="spu_llvm">
                 <property name="text">
-                 <string>LLVM Recompiler (fastest)</string>
+                 <string notr="true">LLVM Recompiler (fastest)</string>
                 </property>
                </widget>
               </item>
@@ -1378,14 +1378,14 @@
             <item>
              <widget class="QRadioButton" name="enterButtonAssignCircle">
               <property name="text">
-               <string>Enter with circle</string>
+               <string notr="true">Enter with the Circle button</string>
               </property>
              </widget>
             </item>
             <item>
              <widget class="QRadioButton" name="enterButtonAssignCross">
               <property name="text">
-               <string>Enter with cross</string>
+               <string notr="true">Enter with the Cross button</string>
               </property>
              </widget>
             </item>
@@ -1718,6 +1718,13 @@
                </widget>
               </item>
               <item>
+               <widget class="QCheckBox" name="accuratePPUfma">
+                <property name="text">
+                 <string>Accurate PPU FMA</string>
+                </property>
+               </widget>
+              </item>
+              <item>
                <widget class="QCheckBox" name="silenceAllLogs">
                 <property name="text">
                  <string>Silence All Logs</string>
@@ -1784,7 +1791,7 @@
                  </sizepolicy>
                 </property>
                 <property name="text">
-                 <string>Manually load selected libraries</string>
+                 <string notr="true">Manually load selected libraries</string>
                 </property>
                </widget>
               </item>
@@ -1797,7 +1804,7 @@
                  </sizepolicy>
                 </property>
                 <property name="text">
-                 <string>Load automatic and manual selection</string>
+                 <string notr="true">Load automatic and manual selection</string>
                 </property>
                </widget>
               </item>
@@ -1810,7 +1817,7 @@
                  </sizepolicy>
                 </property>
                 <property name="text">
-                 <string>Load liblv2.sprx only</string>
+                 <string notr="true">Load liblv2.sprx only</string>
                 </property>
                </widget>
               </item>
@@ -1823,7 +1830,7 @@
                  </sizepolicy>
                 </property>
                 <property name="text">
-                 <string>Load liblv2.sprx and manual selection</string>
+                 <string notr="true">Load liblv2.sprx and manual selection</string>
                 </property>
                </widget>
               </item>
@@ -1836,7 +1843,7 @@
                  </sizepolicy>
                 </property>
                 <property name="text">
-                 <string>Load liblv2.sprx and strict selection</string>
+                 <string notr="true">Load liblv2.sprx and strict selection</string>
                 </property>
                </widget>
               </item>
@@ -2126,7 +2133,7 @@
              <string>Point your mouse at an option to display a description in here.
 
 
-             </string>
+</string>
             </property>
             <property name="textFormat">
              <enum>Qt::PlainText</enum>
@@ -2404,7 +2411,7 @@
               <item>
                <widget class="QLabel" name="label_game_window_title_format">
                 <property name="text">
-                 <string>FPS: 60 | Renderer | Version | Game [ID]</string>
+                 <string notr="true">FPS: 60 | Renderer | Version | Game [ID]</string>
                 </property>
                 <property name="alignment">
                  <set>Qt::AlignCenter</set>

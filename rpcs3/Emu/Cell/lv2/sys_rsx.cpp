@@ -38,6 +38,57 @@ u64 rsxTimeStamp()
 	return get_timebased_time();
 }
 
+void lv2_rsx_config::send_event(u64 data1, u64 event_flags, u64 data3) const
+{
+	// Filter event bits, send them only if they are masked by gcm
+	// Except the upper 32-bits, they are reserved for unmapped io events and execute unconditionally
+	event_flags &= vm::_ref<RsxDriverInfo>(driver_info).handlers | 0xffff'ffffull << 32;
+
+	if (!event_flags)
+	{
+		// Nothing to do
+		return;
+	}
+
+	auto error = sys_event_port_send(rsx_event_port, data1, event_flags, data3);
+
+	while (error + 0u == CELL_EBUSY)
+	{
+		auto cpu = get_current_cpu_thread();
+
+		if (cpu && cpu->id_type() != 1)
+		{
+			cpu = nullptr;
+		}
+
+		if (cpu)
+		{
+			// Deschedule
+			lv2_obj::sleep(*cpu, 100);
+		}
+		else if (const auto rsx = rsx::get_current_renderer(); rsx->is_current_thread())
+		{
+			rsx->on_semaphore_acquire_wait();
+		}
+		
+		// Wait a bit before resending event
+		thread_ctrl::wait_for(100);
+
+		if (cpu && cpu->check_state())
+		{
+			error = 0;
+			break;
+		}
+
+		error = sys_event_port_send(rsx_event_port, data1, event_flags, data3);
+	}
+
+	if (error && error + 0u != CELL_ENOTCONN)
+	{
+		fmt::throw_exception("lv2_rsx_config::send_event() Failed to send event! (error=%x)" HERE, +error);
+	}
+}
+
 error_code sys_rsx_device_open()
 {
 	sys_rsx.todo("sys_rsx_device_open()");
@@ -186,7 +237,8 @@ error_code sys_rsx_context_allocate(vm::ptr<u32> context_id, vm::ptr<u64> lpar_d
 	dmaControl.put = 0;
 	dmaControl.ref = 0; // Set later to -1 by cellGcmSys
 
-	if (false/*system_mode == CELL_GCM_SYSTEM_MODE_IOMAP_512MB*/)
+	if ((false/*system_mode & something*/ || g_cfg.video.decr_memory_layout)
+		&& g_cfg.core.debug_console_mode)
 		rsx::get_current_renderer()->main_mem_size = 0x20000000; //512MB
 	else
 		rsx::get_current_renderer()->main_mem_size = 0x10000000; //256MB
@@ -200,6 +252,8 @@ error_code sys_rsx_context_allocate(vm::ptr<u32> context_id, vm::ptr<u64> lpar_d
 	rsx_cfg->rsx_event_port = driverInfo.handler_queue;
 	sys_event_queue_create(vm::get_addr(&driverInfo.handler_queue), attr, 0, 0x20);
 	sys_event_port_connect_local(rsx_cfg->rsx_event_port, driverInfo.handler_queue);
+
+	rsx_cfg->dma_address = vm::cast(*lpar_dma_control, HERE);
 
 	const auto render = rsx::get_current_renderer();
 	render->display_buffers_count = 0;
@@ -349,12 +403,15 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 	switch (package_id)
 	{
 	case 0x001: // FIFO
+	{
 		render->pause();
-		render->ctrl->get = static_cast<u32>(a3);
-		render->ctrl->put = static_cast<u32>(a4);
-		render->restore_point = static_cast<u32>(a3);
+		const u64 get = static_cast<u32>(a3);
+		const u64 put = static_cast<u32>(a4);
+		vm::_ref<atomic_be_t<u64>>(rsx_cfg->dma_address + ::offset32(&RsxDmaControl::put)).release(put << 32 | get);
+		render->sync_point_request.release(true);
 		render->unpause();
 		break;
+	}
 
 	case 0x100: // Display mode set
 		break;
@@ -371,6 +428,9 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 		// otherwise it contains a display buffer offset
 		if ((a4 & 0x80000000) != 0)
 		{
+			// NOTE: There currently seem to only be 2 active heads on PS3
+			verify(HERE), a3 < 2;
+
 			// last half byte gives buffer, 0xf seems to trigger just last queued
 			u8 idx_check = a4 & 0xf;
 			if (idx_check > 7)
@@ -408,14 +468,13 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 
 	case 0x103: // Display Queue
 	{
-		driverInfo.head[a3].lastQueuedBufferId = static_cast<u32>(a4);
-		driverInfo.head[a3].flipFlags |= 0x40000000 | (1 << a4);
-
 		// NOTE: There currently seem to only be 2 active heads on PS3
 		verify(HERE), a3 < 2;
 
-		const u64 shift_offset = (a3 + 5);
-		sys_event_port_send(rsx_cfg->rsx_event_port, 0, (1ull << shift_offset), 0);
+		driverInfo.head[a3].lastQueuedBufferId = static_cast<u32>(a4);
+		driverInfo.head[a3].flipFlags |= 0x40000000 | (1 << a4);
+
+		rsx_cfg->send_event(0, SYS_RSX_EVENT_QUEUE_BASE << a3, 0);
 
 		render->on_frame_end(static_cast<u32>(a4));
 	}
@@ -464,9 +523,13 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 			return SYS_RSX_CONTEXT_ATTRIBUTE_ERROR;
 		}
 
-		u32 flipStatus = driverInfo.head[a3].flipFlags;
-		flipStatus = (flipStatus & static_cast<u32>(a4)) | static_cast<u32>(a5);
-		driverInfo.head[a3].flipFlags = flipStatus;
+		// NOTE: There currently seem to only be 2 active heads on PS3
+		verify(HERE), a3 < 2;
+
+		driverInfo.head[a3].flipFlags.atomic_op([&](be_t<u32>& flipStatus)
+		{
+			flipStatus = (flipStatus & static_cast<u32>(a4)) | static_cast<u32>(a5);
+		});
 	}
 	break;
 
@@ -479,6 +542,8 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 		//a4 low bits = ret.limit = ((offset + size - 1) / 0x10000) << 16 | (location << 31);
 		//a5 high bits = ret.pitch = (pitch / 0x100) << 8;
 		//a5 low bits = ret.format = base | ((base + ((size - 1) / 0x10000)) << 13) | (comp << 26) | (1 << 30);
+
+		verify(HERE), a3 < std::size(render->tiles);
 
 		auto& tile = render->tiles[a3];
 
@@ -506,6 +571,8 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 		//a5 low = offset = offset;
 		//a6 high = status0 = (zcullDir << 1) | (zcullFormat << 2) | ((sFunc & 0xF) << 12) | (sRef << 16) | (sMask << 24);
 		//a6 low = status1 = (0x2000 << 0) | (0x20 << 16);
+
+		verify(HERE), a3 < std::size(render->zculls);
 
 		auto &zcull = render->zculls[a3];
 		zcull.zFormat = ((a4 >> 32) >> 4) & 0xF;
@@ -539,6 +606,7 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 		break;
 
 	case 0xFEC: // hack: flip event notification
+
 		// we only ever use head 1 for now
 		driverInfo.head[1].flipFlags |= 0x80000000;
 		driverInfo.head[1].lastFlipTime = rsxTimeStamp(); // should rsxthread set this?
@@ -547,30 +615,34 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 		// seems gcmSysWaitLabel uses this offset, so lets set it to 0 every flip
 		vm::_ref<u32>(render->label_addr + 0x10) = 0;
 
-		//if (a3 == 0)
-		//	sys_event_port_send(rsx_cfg->rsx_event_port, 0, (1 << 3), 0);
-		//if (a3 == 1)
-		sys_event_port_send(rsx_cfg->rsx_event_port, 0, (1 << 4), 0);
+		rsx_cfg->send_event(0, SYS_RSX_EVENT_FLIP_BASE << 1, 0);
 		break;
 
 	case 0xFED: // hack: vblank command
+	{
+		// NOTE: There currently seem to only be 2 active heads on PS3
+		verify(HERE), a3 < 2;
+
 		// todo: this is wrong and should be 'second' vblank handler and freq, but since currently everything is reported as being 59.94, this should be fine
 		vm::_ref<u32>(render->device_addr + 0x30) = 1;
 		driverInfo.head[a3].vBlankCount++;
 		driverInfo.head[a3].lastSecondVTime = rsxTimeStamp();
-		sys_event_port_send(rsx_cfg->rsx_event_port, 0, (1 << 1), 0);
+
+		u64 event_flags = SYS_RSX_EVENT_VBLANK;
 
 		if (render->enable_second_vhandler)
-			sys_event_port_send(rsx_cfg->rsx_event_port, 0, (1 << 11), 0); // second vhandler
+			event_flags |= SYS_RSX_EVENT_SECOND_VBLANK_BASE << a3; // second vhandler
 
+		rsx_cfg->send_event(0, event_flags, 0);
 		break;
+	}
 
 	case 0xFEF: // hack: user command
 		// 'custom' invalid package id for now
 		// as i think we need custom lv1 interrupts to handle this accurately
 		// this also should probly be set by rsxthread
 		driverInfo.userCmdParam = static_cast<u32>(a4);
-		sys_event_port_send(rsx_cfg->rsx_event_port, 0, (1 << 7), 0);
+		rsx_cfg->send_event(0, SYS_RSX_EVENT_USER_CMD, 0);
 		break;
 
 	default:

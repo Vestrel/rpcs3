@@ -6,14 +6,12 @@
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QFileInfo>
-#include <QLayout>
 #include <QTimer>
 #include <QObject>
-#include <QMessageBox>
-#include <QTextDocument>
 #include <QStyleFactory>
 
 #include "rpcs3qt/gui_application.h"
+#include "rpcs3qt/fatal_error_dialog.h"
 
 #include "headless_application.h"
 #include "Utilities/sema.h"
@@ -26,6 +24,8 @@ DYNAMIC_IMPORT("ntdll.dll", NtSetTimerResolution, NTSTATUS(ULONG DesiredResoluti
 #include <unistd.h>
 #include <spawn.h>
 #include <sys/wait.h>
+#include <stdlib.h>
+#include <limits.h>
 #endif
 
 #ifdef __linux__
@@ -45,12 +45,6 @@ DYNAMIC_IMPORT("ntdll.dll", NtSetTimerResolution, NTSTATUS(ULONG DesiredResoluti
 #include <charconv>
 
 inline std::string sstr(const QString& _in) { return _in.toStdString(); }
-
-template <typename... Args>
-inline auto tr(Args&&... args)
-{
-	return QObject::tr(std::forward<Args>(args)...);
-}
 
 static semaphore<> s_qt_init;
 
@@ -83,23 +77,8 @@ LOG_CHANNEL(sys_log, "SYS");
 
 	auto show_report = [](const std::string& text)
 	{
-		QMessageBox msg;
-		msg.setWindowTitle(tr("RPCS3: Fatal Error"));
-		msg.setIcon(QMessageBox::Critical);
-		msg.setTextFormat(Qt::RichText);
-		msg.setText(QString(R"(
-			<p style="white-space: nowrap;">
-				%1<br>
-				%2<br>
-				<a href='https://github.com/RPCS3/rpcs3/wiki/How-to-ask-for-Support'>https://github.com/RPCS3/rpcs3/wiki/How-to-ask-for-Support</a><br>
-				%3<br>
-			</p>
-			)")
-			.arg(Qt::convertFromPlainText(QString::fromStdString(text)))
-			.arg(tr("HOW TO REPORT ERRORS:"))
-			.arg(tr("Please, don't send incorrect reports. Thanks for understanding.")));
-		msg.layout()->setSizeConstraint(QLayout::SetFixedSize);
-		msg.exec();
+		fatal_error_dialog dlg(text);
+		dlg.exec();
 	};
 
 #ifdef __APPLE__
@@ -129,9 +108,24 @@ LOG_CHANNEL(sys_log, "SYS");
 #else
 			pid_t pid;
 			std::vector<char> data(text.data(), text.data() + text.size() + 1);
+			std::string run_arg = +s_argv0;
 			std::string err_arg = "--error";
-			char* argv[] = {+s_argv0, err_arg.data(), data.data(), nullptr};
-			int ret = posix_spawn(&pid, +s_argv0, nullptr, nullptr, argv, environ);
+
+			if (run_arg.find_first_of('/') == umax)
+			{
+				// AppImage has "rpcs3" in argv[0], can't just execute it
+#ifdef __linux__
+				char buffer[PATH_MAX]{};
+				if (::readlink("/proc/self/exe", buffer, sizeof(buffer) - 1) > 0)
+				{
+					printf("Found exec link: %s\n", buffer);
+					run_arg = buffer;
+				}
+#endif
+			}
+
+			char* argv[] = {run_arg.data(), err_arg.data(), data.data(), nullptr};
+			int ret = posix_spawn(&pid, run_arg.c_str(), nullptr, nullptr, argv, environ);
 
 			if (ret == 0)
 			{

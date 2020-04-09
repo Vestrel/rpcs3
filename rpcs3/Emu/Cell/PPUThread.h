@@ -16,6 +16,7 @@ enum class ppu_cmd : u32
 	lle_call, // Load addr and rtoc at *arg or *gpr[arg] and execute
 	hle_call, // Execute function by index (arg)
 	ptr_call, // Execute function by pointer
+	opd_call, // Execute function by provided rtoc and address (unlike lle_call, does not read memory)
 	initialize, // ppu_initialize()
 	sleep,
 	reset_stack, // resets stack address
@@ -35,13 +36,20 @@ enum class ppu_syscall_code : u64
 {
 };
 
+// ppu function descriptor
+struct ppu_func_opd_t
+{
+	be_t<u32> addr;
+	be_t<u32> rtoc;
+};
+
 // ppu_thread constructor argument
 struct ppu_thread_params
 {
 	vm::addr_t stack_addr;
 	u32 stack_size;
 	u32 tls_addr;
-	u32 entry;
+	ppu_func_opd_t entry;
 	u64 arg0;
 	u64 arg1;
 };
@@ -53,7 +61,11 @@ public:
 	static const u32 id_step = 1;
 	static const u32 id_count = 2048;
 
-	virtual std::string dump() const override;
+	virtual std::string dump_all() const override;
+	virtual std::string dump_regs() const override;
+	virtual std::string dump_callstack() const override;
+	virtual std::vector<u32> dump_callstack_list() const override;
+	virtual std::string dump_misc() const override;
 	virtual void cpu_task() override final;
 	virtual void cpu_sleep() override;
 	virtual void cpu_mem() override;
@@ -188,6 +200,7 @@ public:
 	cmd64 cmd_wait(); // Empty command means caller must return, like true from cpu_thread::check_status().
 	cmd64 cmd_get(u32 index) { return cmd_queue[cmd_queue.peek() + index].load(); }
 
+	const ppu_func_opd_t entry_func;
 	u64 start_time{0}; // Sleep start timepoint
 	alignas(64) u64 syscall_args[4]{0}; // Last syscall arguments stored
 	const char* current_function{}; // Current function name for diagnosis, optimized for speed.

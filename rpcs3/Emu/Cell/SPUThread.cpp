@@ -93,39 +93,6 @@ extern u64 get_system_time();
 
 extern thread_local u64 g_tls_fault_spu;
 
-template <>
-void fmt_class_string<spu_decoder_type>::format(std::string& out, u64 arg)
-{
-	format_enum(out, arg, [](spu_decoder_type type)
-	{
-		switch (type)
-		{
-		case spu_decoder_type::precise: return "Interpreter (precise)";
-		case spu_decoder_type::fast: return "Interpreter (fast)";
-		case spu_decoder_type::asmjit: return "Recompiler (ASMJIT)";
-		case spu_decoder_type::llvm: return "Recompiler (LLVM)";
-		}
-
-		return unknown;
-	});
-}
-
-template <>
-void fmt_class_string<spu_block_size_type>::format(std::string& out, u64 arg)
-{
-	format_enum(out, arg, [](spu_block_size_type type)
-	{
-		switch (type)
-		{
-		case spu_block_size_type::safe: return "Safe";
-		case spu_block_size_type::mega: return "Mega";
-		case spu_block_size_type::giga: return "Giga";
-		}
-
-		return unknown;
-	});
-}
-
 namespace spu
 {
 	namespace scheduler
@@ -1009,11 +976,61 @@ spu_imm_table_t::spu_imm_table_t()
 	}
 }
 
-std::string spu_thread::dump() const
+std::string spu_thread::dump_all() const
 {
-	std::string ret = cpu_thread::dump();
+	std::string ret = cpu_thread::dump_misc();
+	ret += '\n';
+	ret += dump_misc();
+	ret += '\n';
+	ret += dump_regs();
+	ret += '\n';
 
-	fmt::append(ret, "\nBlock Weight: %u (Retreats: %u)", block_counter, block_failure);
+	return ret;
+}
+
+std::string spu_thread::dump_regs() const
+{
+	std::string ret;
+
+	for (u32 i = 0; i < 128; i++)
+	{
+		fmt::append(ret, "r%d = %s\n", i, gpr[i]);
+	}
+
+	fmt::append(ret, "\nEvent Stat: 0x%x\n", +ch_event_stat);
+	fmt::append(ret, "Event Mask: 0x%x\n", +ch_event_mask);
+
+	if (const u32 addr = raddr)
+		fmt::append(ret, "Reservation Addr: 0x%x\n", addr);
+	else
+		fmt::append(ret, "Reservation Addr: none\n");
+
+	fmt::append(ret, "Interrupts Enabled: %s\n", interrupts_enabled.load());
+	fmt::append(ret, "Inbound Mailbox: %s\n", ch_in_mbox);
+	fmt::append(ret, "Out Mailbox: %s\n", ch_out_mbox);
+	fmt::append(ret, "Out Interrupts Mailbox: %s\n", ch_out_intr_mbox);
+	fmt::append(ret, "SNR config: 0x%llx\n", snr_config);
+	fmt::append(ret, "SNR1: %s\n", ch_snr1);
+	fmt::append(ret, "SNR2: %s", ch_snr2);
+
+	return ret;
+}
+
+std::string spu_thread::dump_callstack() const
+{
+	return {};
+}
+
+std::vector<u32> spu_thread::dump_callstack_list() const
+{
+	return {};
+}
+
+std::string spu_thread::dump_misc() const
+{
+	std::string ret;
+
+	fmt::append(ret, "Block Weight: %u (Retreats: %u)", block_counter, block_failure);
 
 	if (g_cfg.core.spu_prof)
 	{
@@ -1028,7 +1045,6 @@ std::string spu_thread::dump() const
 		// Print chunk address from lowest 16 bits
 		fmt::append(ret, "...chunk-0x%05x", (name & 0xffff) * 4);
 	}
-
 	fmt::append(ret, "\n[%s]", ch_mfc_cmd);
 	fmt::append(ret, "\nLocal Storage: 0x%08x..0x%08x", offset, offset + 0x3ffff);
 	fmt::append(ret, "\nTag Mask: 0x%08x", ch_tag_mask);
@@ -1043,15 +1059,8 @@ std::string spu_thread::dump() const
 		}
 		else
 		{
-			fmt::append(ret, "\n[-]");
+			break;
 		}
-	}
-
-	ret += "\nRegisters:\n=========";
-
-	for (u32 i = 0; i < 128; i++)
-	{
-		fmt::append(ret, "\nGPR[%d] = %s", i, gpr[i]);
 	}
 
 	return ret;
@@ -3254,6 +3263,32 @@ void spu_thread::fast_call(u32 ls_addr)
 	pc = old_pc;
 	gpr[0]._u32[3] = old_lr;
 	gpr[1]._u32[3] = old_stack;
+}
+
+template <>
+void fmt_class_string<spu_channel>::format(std::string& out, u64 arg)
+{
+	const auto& ch = get_object(arg);
+
+	const u64 raw = ch.data.load();
+
+	if (raw & spu_channel::bit_count)
+	{
+		fmt::append(out, "0x%08x", static_cast<u32>(raw));
+	}
+	else
+	{
+		out += "empty"; 
+	}
+}
+
+template <>
+void fmt_class_string<spu_channel_4_t>::format(std::string& out, u64 arg)
+{
+	const auto& ch = get_object(arg);
+
+	// TODO
+	fmt::append(out, "count = %d", ch.get_count());
 }
 
 DECLARE(spu_thread::g_raw_spu_ctr){};

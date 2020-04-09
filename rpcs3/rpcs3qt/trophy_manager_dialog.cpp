@@ -611,8 +611,8 @@ void trophy_manager_dialog::ApplyFilter()
 			continue;
 		}
 
-		const int trophy_id = item->text().toInt();
-		const QString trophy_type = type_item->text();
+		const int trophy_id   = item->text().toInt();
+		const int trophy_type = type_item->data(Qt::UserRole).toInt();
 
 		// I could use boolean logic and reduce this to something much shorter and also much more confusing...
 		const bool hidden = icon_item->data(Qt::UserRole).toBool();
@@ -637,10 +637,10 @@ void trophy_manager_dialog::ApplyFilter()
 		{
 			hide = true;
 		}
-		else if ((trophy_type == Bronze   && !m_show_bronze_trophies)
-		 || (trophy_type == Silver   && !m_show_silver_trophies)
-		 || (trophy_type == Gold     && !m_show_gold_trophies)
-		 || (trophy_type == Platinum && !m_show_platinum_trophies))
+		else if ((trophy_type == SCE_NP_TROPHY_GRADE_BRONZE && !m_show_bronze_trophies)
+		 || (trophy_type == SCE_NP_TROPHY_GRADE_SILVER && !m_show_silver_trophies)
+		 || (trophy_type == SCE_NP_TROPHY_GRADE_GOLD && !m_show_gold_trophies)
+		 || (trophy_type == SCE_NP_TROPHY_GRADE_PLATINUM && !m_show_platinum_trophies))
 		{
 			hide = true;
 		}
@@ -756,7 +756,7 @@ void trophy_manager_dialog::PopulateGameTable()
 		const int all_trophies = m_trophies_db[i]->trop_usr->GetTrophiesCount();
 		const int unlocked_trophies = m_trophies_db[i]->trop_usr->GetUnlockedTrophiesCount();
 		const int percentage = 100 * unlocked_trophies / all_trophies;
-		const QString progress = QString("%0% (%1/%2)").arg(percentage).arg(unlocked_trophies).arg(all_trophies);
+		const QString progress = tr("%0% (%1/%2)").arg(percentage).arg(unlocked_trophies).arg(all_trophies);
 		const QString name = qstr(m_trophies_db[i]->game_name).simplified();
 
 		custom_table_widget_item* icon_item = new custom_table_widget_item;
@@ -789,7 +789,7 @@ void trophy_manager_dialog::PopulateTrophyTable()
 	const int unlocked_trophies = data->trop_usr->GetUnlockedTrophiesCount();
 	const int percentage = 100 * unlocked_trophies / all_trophies;
 
-	m_game_progress->setText(QString("Progress: %1% (%2/%3)").arg(percentage).arg(unlocked_trophies).arg(all_trophies));
+	m_game_progress->setText(tr("Progress: %1% (%2/%3)").arg(percentage).arg(unlocked_trophies).arg(all_trophies));
 
 	m_trophy_table->clearContents();
 	m_trophy_table->setRowCount(all_trophies);
@@ -827,14 +827,14 @@ void trophy_manager_dialog::PopulateTrophyTable()
 		const QString platinum_relevant = platinum_link_id < 0 ? tr("No") : tr("Yes");
 
 		// Get trophy type
-		QString trophy_type = "";
+		QString trophy_type;
 
 		switch (n->GetAttribute("ttype")[0])
 		{
-		case 'B': details.trophyGrade = SCE_NP_TROPHY_GRADE_BRONZE;   trophy_type = Bronze;   break;
-		case 'S': details.trophyGrade = SCE_NP_TROPHY_GRADE_SILVER;   trophy_type = Silver;   break;
-		case 'G': details.trophyGrade = SCE_NP_TROPHY_GRADE_GOLD;     trophy_type = Gold;     break;
-		case 'P': details.trophyGrade = SCE_NP_TROPHY_GRADE_PLATINUM; trophy_type = Platinum; break;
+		case 'B': details.trophyGrade = SCE_NP_TROPHY_GRADE_BRONZE;   trophy_type = tr("Bronze", "Trophy type");   break;
+		case 'S': details.trophyGrade = SCE_NP_TROPHY_GRADE_SILVER;   trophy_type = tr("Silver", "Trophy type");   break;
+		case 'G': details.trophyGrade = SCE_NP_TROPHY_GRADE_GOLD;     trophy_type = tr("Gold", "Trophy type");     break;
+		case 'P': details.trophyGrade = SCE_NP_TROPHY_GRADE_PLATINUM; trophy_type = tr("Platinum", "Trophy type"); break;
 		}
 
 		// Get hidden state
