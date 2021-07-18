@@ -37,12 +37,12 @@ struct WAVHeader
 		FMTHeader(u16 ch)
 			: ID("fmt "_u32)
 			, Size(16)
-			, AudioFormat(3)
+			, AudioFormat(1)
 			, NumChannels(ch)
 			, SampleRate(48000)
-			, ByteRate(SampleRate * ch * sizeof(float))
-			, BlockAlign(ch * sizeof(float))
-			, BitsPerSample(sizeof(float) * 8)
+			, ByteRate(SampleRate * ch * 3)
+			, BlockAlign(ch * 3)
+			, BitsPerSample(3 * 8)
 		{
 		}
 	} FMT;

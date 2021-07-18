@@ -68,7 +68,7 @@ void XAudio2Backend::Play()
 	if (FAILED(hr))
 	{
 		XAudio.error("Start() failed: %s (0x%08x)", std::system_category().message(hr), static_cast<u32>(hr));
-		Emu.Pause();
+		//Emu.Pause();
 	}
 }
 
@@ -86,31 +86,51 @@ void XAudio2Backend::Pause()
 	if (FAILED(hr))
 	{
 		XAudio.error("Stop() failed: %s (0x%08x)", std::system_category().message(hr), static_cast<u32>(hr));
-		Emu.Pause();
+		//Emu.Pause();
 	}
 }
 
 void XAudio2Backend::Open(u32 /* num_buffers */)
 {
 	WAVEFORMATEX waveformatex;
-	waveformatex.wFormatTag = m_convert_to_u16 ? WAVE_FORMAT_PCM : WAVE_FORMAT_IEEE_FLOAT;
-	waveformatex.nChannels = m_channels;
-	waveformatex.nSamplesPerSec = m_sampling_rate;
-	waveformatex.nAvgBytesPerSec = static_cast<DWORD>(m_sampling_rate * m_channels * m_sample_size);
-	waveformatex.nBlockAlign = m_channels * m_sample_size;
-	waveformatex.wBitsPerSample = m_sample_size * 8;
+	waveformatex.wFormatTag = WAVE_FORMAT_IEEE_FLOAT;
+	waveformatex.nChannels = 2;
+	waveformatex.nSamplesPerSec = 48000;
+	waveformatex.nAvgBytesPerSec = static_cast<DWORD>(48000 * 2 * 4);
+	waveformatex.nBlockAlign = 2 * 4;
+	waveformatex.wBitsPerSample = 32;
 	waveformatex.cbSize = 0;
+
+	// WAVEFORMATEXTENSIBLE config = {};
+
+	// config.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+	// config.Format.nChannels = 2;
+	// config.Format.nSamplesPerSec = 48000;
+	// config.Format.nAvgBytesPerSec = static_cast<DWORD>(48000 * 2 * 4);
+	// config.Format.nBlockAlign = 4 * 2;
+	// config.Format.wBitsPerSample = 32;
+	// config.Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
+
+	// config.Samples.wValidBitsPerSample = 32;
+	// config.dwChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+	// config.SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
 
 	const HRESULT hr = m_xaudio2_instance->CreateSourceVoice(&m_source_voice, &waveformatex, 0, XAUDIO2_DEFAULT_FREQ_RATIO);
 	if (FAILED(hr))
 	{
 		XAudio.error("CreateSourceVoice() failed: %s (0x%08x)", std::system_category().message(hr), static_cast<u32>(hr));
-		Emu.Pause();
+		//Emu.Pause();
 		return;
 	}
 
 	AUDIT(m_source_voice != nullptr);
 	m_source_voice->SetVolume(1.0f);
+
+	XAUDIO2_DEBUG_CONFIGURATION debug_cfg = {};
+	debug_cfg.TraceMask = XAUDIO2_LOG_WARNINGS | XAUDIO2_LOG_TIMING | XAUDIO2_LOG_DETAIL;
+	debug_cfg.LogTiming = true;
+
+	m_xaudio2_instance->SetDebugConfiguration(&debug_cfg);
 }
 
 bool XAudio2Backend::IsPlaying()
@@ -138,7 +158,7 @@ bool XAudio2Backend::AddData(const void* src, u32 num_samples)
 
 	XAUDIO2_BUFFER buffer;
 
-	buffer.AudioBytes = num_samples * m_sample_size;
+	buffer.AudioBytes = num_samples;
 	buffer.Flags = 0;
 	buffer.LoopBegin = XAUDIO2_NO_LOOP_REGION;
 	buffer.LoopCount = 0;
@@ -146,13 +166,13 @@ bool XAudio2Backend::AddData(const void* src, u32 num_samples)
 	buffer.pAudioData = static_cast<const BYTE*>(src);
 	buffer.pContext = nullptr;
 	buffer.PlayBegin = 0;
-	buffer.PlayLength = AUDIO_BUFFER_SAMPLES;
+	buffer.PlayLength = 0;
 
 	const HRESULT hr = m_source_voice->SubmitSourceBuffer(&buffer);
 	if (FAILED(hr))
 	{
 		XAudio.error("AddData() failed: %s (0x%08x)", std::system_category().message(hr), static_cast<u32>(hr));
-		Emu.Pause();
+		//Emu.Pause();
 		return false;
 	}
 
@@ -167,7 +187,7 @@ void XAudio2Backend::Flush()
 	if (FAILED(hr))
 	{
 		XAudio.error("FlushSourceBuffers() failed: %s (0x%08x)", std::system_category().message(hr), static_cast<u32>(hr));
-		Emu.Pause();
+		//Emu.Pause();
 	}
 }
 
@@ -190,7 +210,7 @@ f32 XAudio2Backend::SetFrequencyRatio(f32 new_ratio)
 	if (FAILED(hr))
 	{
 		XAudio.error("SetFrequencyRatio() failed: %s (0x%08x)", std::system_category().message(hr), static_cast<u32>(hr));
-		Emu.Pause();
+		//Emu.Pause();
 		return 1.0f;
 	}
 

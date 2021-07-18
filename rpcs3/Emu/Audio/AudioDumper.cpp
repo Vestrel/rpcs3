@@ -14,9 +14,9 @@ AudioDumper::AudioDumper(u16 ch)
 		{
 			path += id + "_";
 		}
-		path += date_time::current_time_narrow<'_'>() + ".wav";
+		path += date_time::current_time_narrow<'_'>() + ".raw";
 		m_output.open(path, fs::rewrite);
-		m_output.write(m_header); // write initial file header
+		// m_output.write(m_header); // write initial file header
 	}
 }
 
@@ -25,7 +25,7 @@ AudioDumper::~AudioDumper()
 	if (GetCh())
 	{
 		m_output.seek(0);
-		m_output.write(m_header); // rewrite file header
+		// m_output.write(m_header); // rewrite file header
 	}
 }
 

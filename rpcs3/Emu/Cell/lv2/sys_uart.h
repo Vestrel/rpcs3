@@ -243,12 +243,16 @@ struct ps3av_pkt_reply_hdr
 	be_t<u32, 1> status;
 };
 
+static_assert(sizeof(ps3av_pkt_reply_hdr) == 12);
+
 struct ps3av_header
 {
 	be_t<u16, 1> version;
 	be_t<u16, 1> length;
 	be_t<u32, 1> cid;
 };
+
+static_assert(sizeof(ps3av_header) == 8);
 
 struct ps3av_info_resolution
 {
@@ -303,12 +307,16 @@ struct ps3av_get_monitor_info_reply
 	ps3av_info_audio audio_info[29];
 };
 
+static_assert(sizeof(ps3av_get_monitor_info_reply) == 204);
+
 struct ps3av_get_monitor_info
 {
 	ps3av_header hdr;
 	be_t<u16, 1> avport;
 	be_t<u16, 1> reserved;
 };
+
+static_assert(sizeof(ps3av_get_monitor_info) == 12);
 
 struct ps3av_get_hw_info_reply
 {
@@ -317,6 +325,29 @@ struct ps3av_get_hw_info_reply
 	be_t<u16, 1> num_of_spdif;
 	be_t<u16, 1> resv;
 };
+
+static_assert(sizeof(ps3av_get_hw_info_reply) == 8);
+
+struct ps3av_pkt_audio_mode {
+	ps3av_header hdr;
+	u8 avport;		/* in: avport */
+	u8 reserved0[3];
+	be_t<u32> mask;			/* in: mask */
+	be_t<u32> audio_num_of_ch;	/* in: number of ch */
+	be_t<u32> audio_fs;		/* in: sampling freq */
+	be_t<u32> audio_word_bits;	/* in: sample bit size */
+	be_t<u32> audio_format;		/* in: audio output format */
+	be_t<u32> audio_source;		/* in: audio source */
+	u8 audio_enable[4];	/* in: audio enable */
+	u8 audio_swap[4];		/* in: audio swap */
+	u8 audio_map[4];		/* in: audio map */
+	be_t<u32> audio_layout;		/* in: speaker layout */
+	be_t<u32> audio_downmix;		/* in: audio downmix permission */
+	be_t<u32> audio_downmix_level;
+	u8 audio_cs_info[8];	/* in: IEC channel status */
+};
+
+static_assert(sizeof(ps3av_pkt_audio_mode) == 68);
 
 // SysCalls
 

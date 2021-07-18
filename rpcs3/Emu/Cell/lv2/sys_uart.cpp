@@ -3,6 +3,7 @@
 #include "Emu/Cell/PPUThread.h"
 #include "Emu/Cell/ErrorCodes.h"
 #include "Emu/Cell/lv2/sys_sync.h"
+#include "Emu/Cell/lv2/sys_rsxaudio.h"
 
 #include "sys_uart.h"
 
@@ -12,7 +13,7 @@ struct av_get_monitor_info_cmd : public ps3av_cmd
 {
 	u16 get_size(vuart_av_thread& /*vuart*/, const void* /*pkt_buf*/) override
 	{
-		return 12;
+		return sizeof(ps3av_get_monitor_info);
 	}
 
 	bool execute(vuart_av_thread &vuart, const void *pkt_buf, u32 reply_max_size) override
@@ -65,7 +66,7 @@ struct av_get_hw_conf_cmd : public ps3av_cmd
 {
 	u16 get_size(vuart_av_thread& /*vuart*/, const void* /*pkt_buf*/) override
 	{
-		return 8;
+		return sizeof(ps3av_header);
 	}
 
 	bool execute(vuart_av_thread &vuart, const void *pkt_buf, u32 reply_max_size) override
@@ -86,6 +87,48 @@ struct av_get_hw_conf_cmd : public ps3av_cmd
 		out->resv = 0;
 
 		vuart.write_resp(pkt->cid, PS3AV_STATUS_SUCCESS, out.get(), sizeof(ps3av_get_hw_info_reply));
+		return true;
+	}
+};
+
+struct audio_set_mode_cmd : public ps3av_cmd
+{
+	u16 get_size(vuart_av_thread& /*vuart*/, const void* /*pkt_buf*/) override
+	{
+		return sizeof(ps3av_pkt_audio_mode);
+	}
+
+	bool execute(vuart_av_thread &vuart, const void *pkt_buf, u32 reply_max_size) override
+	{
+		auto pkt = static_cast<const ps3av_pkt_audio_mode *>(pkt_buf);
+
+		if (reply_max_size < sizeof(ps3av_pkt_reply_hdr))
+		{
+			vuart.write_resp(pkt->hdr.cid, PS3AV_STATUS_BUFFER_OVERFLOW);
+			return false;
+		}
+
+		auto& rsxaudio_thread = g_fxo->get<rsx_audio>();
+
+		// TODO:
+		if (g_fxo->is_init<rsx_audio>() && pkt->audio_source == SYS_RSXAUDIO_SRC_SERIAL)
+		{
+			rsxaudio_thread.update_hw_param([&](auto& obj)
+			{
+				obj.serial.ch_cnt = pkt->audio_num_of_ch;
+				obj.serial.depth = pkt->audio_word_bits;
+				obj.serial.type = pkt->audio_format;
+				obj.serial.freq = pkt->audio_fs;
+				obj.serial.muted = false;
+				memcpy(obj.serial.en, pkt->audio_enable, sizeof(obj.serial.en));
+				memcpy(obj.serial.swap, pkt->audio_swap, sizeof(obj.serial.swap));
+				memcpy(obj.serial.map, pkt->audio_map, sizeof(obj.serial.map));
+
+				return true;
+			});
+		}
+
+		vuart.write_resp(pkt->hdr.cid, PS3AV_STATUS_SUCCESS);
 		return true;
 	}
 };
@@ -558,7 +601,6 @@ std::shared_ptr<ps3av_cmd> vuart_av_thread::get_cmd(u32 cid)
 	case PS3AV_CID_AV_ENABLE_EVENT:
 	case PS3AV_CID_AV_AUDIO_MUTE:
 	case PS3AV_CID_AUDIO_MUTE:
-	case PS3AV_CID_AUDIO_MODE:
 	case PS3AV_CID_AUDIO_CTRL:
 	case PS3AV_CID_AUDIO_ACTIVE:
 	case PS3AV_CID_AUDIO_INACTIVE:
@@ -568,8 +610,13 @@ std::shared_ptr<ps3av_cmd> vuart_av_thread::get_cmd(u32 cid)
 	case 0xA0002:
 		return std::make_shared<generic_reply_cmd>();
 
+	// AV commands
 	case PS3AV_CID_AV_GET_HW_CONF: return std::make_shared<av_get_hw_conf_cmd>();
 	case PS3AV_CID_AV_GET_MONITOR_INFO: return std::make_shared<av_get_monitor_info_cmd>();
+
+	// Audio commands
+	case PS3AV_CID_AUDIO_MODE: return std::make_shared<audio_set_mode_cmd>();
+
 	default: return {};
 	}
 }

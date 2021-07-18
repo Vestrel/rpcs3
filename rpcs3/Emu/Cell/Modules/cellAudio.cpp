@@ -53,6 +53,7 @@ cell_audio_config::cell_audio_config()
 void cell_audio_config::reset()
 {
 	backend.reset();
+	return;
 	backend = Emu.GetCallbacks().get_audio();
 
 	audio_channels = backend->get_channels();
@@ -585,6 +586,7 @@ namespace audio
 
 void cell_audio_thread::update_config()
 {
+	return;
 	std::lock_guard lock(mutex);
 
 	// Clear ringbuffer
@@ -599,6 +601,7 @@ void cell_audio_thread::update_config()
 
 void cell_audio_thread::operator()()
 {
+	return;
 	thread_ctrl::scoped_priority high_prio(+1);
 
 	// Allocate ringbuffer
