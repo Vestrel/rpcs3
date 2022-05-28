@@ -15,7 +15,7 @@
 #include "sys_memory.h"
 #include <span>
 
-extern std::shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object&, const std::string&, s64);
+extern std::shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object&, const std::string&, std::shared_ptr<ps3_process_info_t>, s64);
 extern void ppu_unload_prx(const lv2_prx& prx);
 extern bool ppu_initialize(const ppu_module&, bool = false);
 extern void ppu_finalize(const ppu_module&);
@@ -170,7 +170,7 @@ extern const std::map<std::string_view, int> g_prx_list
 	{ "libwmadec.sprx", 0 },
 };
 
-static error_code prx_load_module(const std::string& vpath, u64 flags, vm::ptr<sys_prx_load_module_option_t> /*pOpt*/, fs::file src = {}, s64 file_offset = 0)
+static error_code prx_load_module(ppu_thread& ppu, const std::string& vpath, u64 flags, vm::ptr<sys_prx_load_module_option_t> /*pOpt*/, fs::file src = {}, s64 file_offset = 0)
 {
 	if (flags != 0)
 	{
@@ -179,7 +179,7 @@ static error_code prx_load_module(const std::string& vpath, u64 flags, vm::ptr<s
 			return CELL_EINVAL;
 		}
 
-		if (flags & SYS_PRX_LOAD_MODULE_FLAGS_FIXEDADDR && !g_ps3_process_info.ppc_seg)
+		if (flags & SYS_PRX_LOAD_MODULE_FLAGS_FIXEDADDR && !ppu.process->ppc_seg)
 		{
 			return CELL_ENOSYS;
 		}
@@ -275,7 +275,7 @@ static error_code prx_load_module(const std::string& vpath, u64 flags, vm::ptr<s
 		return CELL_PRX_ERROR_ILLEGAL_LIBRARY;
 	}
 
-	const auto prx = ppu_load_prx(obj, path, file_offset);
+	const auto prx = ppu_load_prx(obj, path, ppu.process, file_offset);
 
 	obj.clear();
 
@@ -319,7 +319,7 @@ error_code _sys_prx_load_module_by_fd(ppu_thread& ppu, s32 fd, u64 offset, u64 f
 		return CELL_EBADF;
 	}
 
-	return prx_load_module(offset ? fmt::format("%s_x%x", file->name.data(), offset) : file->name.data(), flags, pOpt, lv2_file::make_view(file, offset), offset);
+	return prx_load_module(ppu, offset ? fmt::format("%s_x%x", file->name.data(), offset) : file->name.data(), flags, pOpt, lv2_file::make_view(file, offset), offset);
 }
 
 error_code _sys_prx_load_module_on_memcontainer_by_fd(ppu_thread& ppu, s32 fd, u64 offset, u32 mem_ct, u64 flags, vm::ptr<sys_prx_load_module_option_t> pOpt)
@@ -340,7 +340,7 @@ static error_code prx_load_module_list(ppu_thread& ppu, s32 count, vm::cpptr<cha
 			return CELL_EINVAL;
 		}
 
-		if (flags & SYS_PRX_LOAD_MODULE_FLAGS_FIXEDADDR && !g_ps3_process_info.ppc_seg)
+		if (flags & SYS_PRX_LOAD_MODULE_FLAGS_FIXEDADDR && !ppu.process->ppc_seg)
 		{
 			return CELL_ENOSYS;
 		}
@@ -350,7 +350,7 @@ static error_code prx_load_module_list(ppu_thread& ppu, s32 count, vm::cpptr<cha
 
 	for (s32 i = 0; i < count; ++i)
 	{
-		const auto result = prx_load_module(path_list[i].get_ptr(), flags, pOpt);
+		const auto result = prx_load_module(ppu, path_list[i].get_ptr(), flags, pOpt);
 
 		if (result < 0)
 		{
@@ -394,7 +394,7 @@ error_code _sys_prx_load_module_on_memcontainer(ppu_thread& ppu, vm::cptr<char> 
 
 	sys_prx.warning("_sys_prx_load_module_on_memcontainer(path=%s, mem_ct=0x%x, flags=0x%x, pOpt=*0x%x)", path, mem_ct, flags, pOpt);
 
-	return prx_load_module(path.get_ptr(), flags, pOpt);
+	return prx_load_module(ppu, path.get_ptr(), flags, pOpt);
 }
 
 error_code _sys_prx_load_module(ppu_thread& ppu, vm::cptr<char> path, u64 flags, vm::ptr<sys_prx_load_module_option_t> pOpt)
@@ -403,7 +403,7 @@ error_code _sys_prx_load_module(ppu_thread& ppu, vm::cptr<char> path, u64 flags,
 
 	sys_prx.warning("_sys_prx_load_module(path=%s, flags=0x%x, pOpt=*0x%x)", path, flags, pOpt);
 
-	return prx_load_module(path.get_ptr(), flags, pOpt);
+	return prx_load_module(ppu, path.get_ptr(), flags, pOpt);
 }
 
 error_code _sys_prx_start_module(ppu_thread& ppu, u32 id, u64 flags, vm::ptr<sys_prx_start_stop_module_option_t> pOpt)
@@ -666,7 +666,7 @@ error_code _sys_prx_register_module(ppu_thread& ppu, vm::cptr<char> name, vm::pt
 
 	if (info.type & 0x1)
 	{
-		if (g_ps3_process_info.get_cellos_appname() == "vsh.self"sv)
+		if (ppu.process->get_cellos_appname() == "vsh.self"sv)
 		{
 			ppu_manual_load_imports_exports(info.lib_stub_ea.addr(), info.lib_stub_size, info.lib_entries_ea.addr(), info.lib_entries_size);
 		}

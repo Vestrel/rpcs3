@@ -322,7 +322,7 @@ error_code sys_mmapper_allocate_shared_memory_ext(ppu_thread& ppu, u64 ipc_key, 
 
 		if (to_perm_check)
 		{
-			if (flags != SYS_MEMORY_PAGE_SIZE_64K || !g_ps3_process_info.debug_or_root())
+			if (flags != SYS_MEMORY_PAGE_SIZE_64K || !ppu.process->debug_or_root())
 			{
 				return CELL_EPERM;
 			}
@@ -415,7 +415,7 @@ error_code sys_mmapper_allocate_shared_memory_from_container_ext(ppu_thread& ppu
 
 		if (to_perm_check)
 		{
-			if (flags != SYS_MEMORY_PAGE_SIZE_64K || !g_ps3_process_info.debug_or_root())
+			if (flags != SYS_MEMORY_PAGE_SIZE_64K || !ppu.process->debug_or_root())
 			{
 				return CELL_EPERM;
 			}

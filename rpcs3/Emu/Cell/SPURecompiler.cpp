@@ -8,6 +8,7 @@
 #include "Emu/cache_utils.hpp"
 #include "Emu/IdManager.h"
 #include "Emu/Cell/timers.hpp"
+#include "Emu/Cell/lv2/sys_process.h"
 #include "Crypto/sha1.h"
 #include "Utilities/StrUtil.h"
 #include "Utilities/JIT.h"
@@ -441,6 +442,11 @@ void spu_cache::initialize()
 	{
 		// Set low priority
 		thread_ctrl::scoped_priority low_prio(-1);
+
+		idm::select<ps3_process_info_t>([&](u32, ps3_process_info_t& info)
+	{
+		vm::load_mem_map(info.mem_map);
+	});
 
 		// Initialize compiler instances for parallel compilation
 		std::unique_ptr<spu_recompiler_base> compiler;
@@ -9936,6 +9942,11 @@ struct spu_llvm_worker
 
 	void operator()()
 	{
+		idm::select<ps3_process_info_t>([&](u32, ps3_process_info_t& info)
+	{
+		vm::load_mem_map(info.mem_map);
+	});
+
 		// SPU LLVM Recompiler instance
 		const auto compiler = spu_recompiler_base::make_llvm_recompiler();
 		compiler->init();
@@ -10044,6 +10055,11 @@ struct spu_llvm
 		{
 			return;
 		}
+
+		idm::select<ps3_process_info_t>([&](u32, ps3_process_info_t& info)
+	{
+		vm::load_mem_map(info.mem_map);
+	});
 
 		// To compile (hash -> item)
 		std::unordered_multimap<u64, spu_item*, value_hash<u64>> enqueued;

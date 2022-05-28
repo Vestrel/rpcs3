@@ -2,6 +2,7 @@
 
 #include "../Utilities/Thread.h"
 #include "../Utilities/bit_set.h"
+#include "Emu/Cell/lv2/sys_process.h"
 
 #include <vector>
 
@@ -48,7 +49,7 @@ public:
 	u64 block_hash = 0;
 
 protected:
-	cpu_thread(u32 id);
+	cpu_thread(u32 id, std::shared_ptr<ps3_process_info_t> process);
 
 public:
 	cpu_thread(const cpu_thread&) = delete;
@@ -59,6 +60,9 @@ public:
 
 	// Self identifier
 	const u32 id;
+
+	// Process to which this thread is attached to
+	const std::shared_ptr<ps3_process_info_t> process{};
 
 	// Public thread state
 	atomic_bs_t<cpu_flag> state{cpu_flag::stop + cpu_flag::wait};

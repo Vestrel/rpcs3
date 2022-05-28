@@ -144,8 +144,8 @@ namespace rsx
 		std::unique_ptr<frame_capture_data> frame;
 
 	public:
-		rsx_replay_thread(std::unique_ptr<frame_capture_data>&& frame_data)
-			: cpu_thread(0)
+		rsx_replay_thread(std::unique_ptr<frame_capture_data>&& frame_data, std::shared_ptr<ps3_process_info_t> process)
+			: cpu_thread(0, process)
 			, frame(std::move(frame_data))
 		{
 		}

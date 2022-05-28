@@ -7,19 +7,20 @@
 #include "Crypto/unself.h"
 #include "Crypto/unedat.h"
 #include "Loader/ELF.h"
+#include "Emu/Cell/PPUThread.h"
 
 #include "sys_process.h"
 #include "sys_overlay.h"
 #include "sys_fs.h"
 
-extern std::pair<std::shared_ptr<lv2_overlay>, CellError> ppu_load_overlay(const ppu_exec_object&, const std::string& path, s64 file_offset);
+extern std::pair<std::shared_ptr<lv2_overlay>, CellError> ppu_load_overlay(const ppu_exec_object&, const std::string& path, std::shared_ptr<ps3_process_info_t> process, s64 file_offset);
 
 extern bool ppu_initialize(const ppu_module&, bool = false);
 extern void ppu_finalize(const ppu_module&);
 
 LOG_CHANNEL(sys_overlay);
 
-static error_code overlay_load_module(vm::ptr<u32> ovlmid, const std::string& vpath, u64 /*flags*/, vm::ptr<u32> entry, fs::file src = {}, s64 file_offset = 0)
+static error_code overlay_load_module(ppu_thread& ppu, vm::ptr<u32> ovlmid, const std::string& vpath, u64 /*flags*/, vm::ptr<u32> entry, fs::file src = {}, s64 file_offset = 0)
 {
 	if (!src)
 	{
@@ -42,7 +43,7 @@ static error_code overlay_load_module(vm::ptr<u32> ovlmid, const std::string& vp
 		return {CELL_ENOEXEC, obj.operator elf_error()};
 	}
 
-	const auto [ovlm, error] = ppu_load_overlay(obj, vfs::get(vpath), file_offset);
+	const auto [ovlm, error] = ppu_load_overlay(obj, vfs::get(vpath), ppu.process, file_offset);
 
 	obj.clear();
 
@@ -61,11 +62,11 @@ static error_code overlay_load_module(vm::ptr<u32> ovlmid, const std::string& vp
 	return CELL_OK;
 }
 
-error_code sys_overlay_load_module(vm::ptr<u32> ovlmid, vm::cptr<char> path, u64 flags, vm::ptr<u32> entry)
+error_code sys_overlay_load_module(ppu_thread &ppu, vm::ptr<u32> ovlmid, vm::cptr<char> path, u64 flags, vm::ptr<u32> entry)
 {
 	sys_overlay.warning("sys_overlay_load_module(ovlmid=*0x%x, path=%s, flags=0x%x, entry=*0x%x)", ovlmid, path, flags, entry);
 
-	if (!g_ps3_process_info.ppc_seg)
+	if (!ppu.process->ppc_seg)
 	{
 		// Process not permitted
 		return CELL_ENOSYS;
@@ -76,14 +77,14 @@ error_code sys_overlay_load_module(vm::ptr<u32> ovlmid, vm::cptr<char> path, u64
 		return CELL_EFAULT;
 	}
 
-	return overlay_load_module(ovlmid, path.get_ptr(), flags, entry);
+	return overlay_load_module(ppu, ovlmid, path.get_ptr(), flags, entry);
 }
 
-error_code sys_overlay_load_module_by_fd(vm::ptr<u32> ovlmid, u32 fd, u64 offset, u64 flags, vm::ptr<u32> entry)
+error_code sys_overlay_load_module_by_fd(ppu_thread &ppu, vm::ptr<u32> ovlmid, u32 fd, u64 offset, u64 flags, vm::ptr<u32> entry)
 {
 	sys_overlay.warning("sys_overlay_load_module_by_fd(ovlmid=*0x%x, fd=%d, offset=0x%llx, flags=0x%x, entry=*0x%x)", ovlmid, fd, offset, flags, entry);
 
-	if (!g_ps3_process_info.ppc_seg)
+	if (!ppu.process->ppc_seg)
 	{
 		// Process not permitted
 		return CELL_ENOSYS;
@@ -108,14 +109,14 @@ error_code sys_overlay_load_module_by_fd(vm::ptr<u32> ovlmid, u32 fd, u64 offset
 		return CELL_EBADF;
 	}
 
-	return overlay_load_module(ovlmid, offset ? fmt::format("%s_x%x", file->name.data(), offset) : file->name.data(), flags, entry, lv2_file::make_view(file, offset), offset);
+	return overlay_load_module(ppu, ovlmid, offset ? fmt::format("%s_x%x", file->name.data(), offset) : file->name.data(), flags, entry, lv2_file::make_view(file, offset), offset);
 }
 
-error_code sys_overlay_unload_module(u32 ovlmid)
+error_code sys_overlay_unload_module(ppu_thread &ppu, u32 ovlmid)
 {
 	sys_overlay.warning("sys_overlay_unload_module(ovlmid=0x%x)", ovlmid);
 
-	if (!g_ps3_process_info.ppc_seg)
+	if (!ppu.process->ppc_seg)
 	{
 		// Process not permitted
 		return CELL_ENOSYS;

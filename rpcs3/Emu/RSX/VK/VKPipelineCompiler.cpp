@@ -3,6 +3,8 @@
 #include "VKRenderPass.h"
 #include "vkutils/device.h"
 #include "Utilities/Thread.h"
+#include "Emu/Cell/lv2/sys_process.h"
+#include "Emu/IdManager.h"
 
 #include <thread>
 
@@ -32,6 +34,11 @@ namespace vk
 
 	void pipe_compiler::operator()()
 	{
+		idm::select<ps3_process_info_t>([&](u32, ps3_process_info_t& info)
+	{
+		vm::load_mem_map(info.mem_map);
+	});
+
 		while (thread_ctrl::state() != thread_state::aborting)
 		{
 			for (auto&& job : m_work_queue.pop_all())

@@ -62,16 +62,16 @@ std::string g_cfg_defaults;
 
 atomic_t<u64> g_watchdog_hold_ctr{0};
 
-extern bool ppu_load_exec(const ppu_exec_object&);
-extern void spu_load_exec(const spu_exec_object&);
-extern void spu_load_rel_exec(const spu_rel_object&);
-extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<lv2_prx*>* loaded_prx);
+extern bool ppu_load_exec(const ppu_exec_object&, std::shared_ptr<ps3_process_info_t>);
+extern void spu_load_exec(const spu_exec_object&, std::shared_ptr<ps3_process_info_t>);
+extern void spu_load_rel_exec(const spu_rel_object&, std::shared_ptr<ps3_process_info_t>);
+extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<lv2_prx*>* loaded_prx, std::shared_ptr<ps3_process_info_t> process);
 extern bool ppu_initialize(const ppu_module&, bool = false);
 extern void ppu_finalize(const ppu_module&);
 extern void ppu_unload_prx(const lv2_prx&);
-extern std::shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object&, const std::string&, s64 = 0);
-extern std::pair<std::shared_ptr<lv2_overlay>, CellError> ppu_load_overlay(const ppu_exec_object&, const std::string& path, s64 = 0);
-extern bool ppu_load_rel_exec(const ppu_rel_object&);
+extern std::shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object&, const std::string&, std::shared_ptr<ps3_process_info_t>, s64 = 0);
+extern std::pair<std::shared_ptr<lv2_overlay>, CellError> ppu_load_overlay(const ppu_exec_object&, const std::string& path, std::shared_ptr<ps3_process_info_t>, s64 = 0);
+extern bool ppu_load_rel_exec(const ppu_rel_object&, std::shared_ptr<ps3_process_info_t>);
 
 fs::file g_tty;
 atomic_t<s64> g_tty_size{0};
@@ -463,6 +463,13 @@ bool Emulator::BootRsxCapture(const std::string& path)
 	Init();
 	g_cfg.video.disable_on_disk_shader_cache.set(true);
 
+	auto proc = idm::make_ptr<ps3_process_info_t>();
+	if (!proc)
+	{
+		sys_log.error("Failed to create process object");
+		return false;
+	}
+
 	vm::init();
 	g_fxo->init(false);
 
@@ -482,7 +489,7 @@ bool Emulator::BootRsxCapture(const std::string& path)
 	GetCallbacks().on_run(false);
 	m_state = system_state::running;
 
-	auto replay_thr = g_fxo->init<named_thread<rsx::rsx_replay_thread>>("RSX Replay", std::move(frame));
+	auto replay_thr = g_fxo->init<named_thread<rsx::rsx_replay_thread>>("RSX Replay", std::move(frame), proc);
 	replay_thr->state -= cpu_flag::stop;
 	replay_thr->state.notify_one(cpu_flag::stop);
 
@@ -810,6 +817,14 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 			}
 		}
 
+		auto proc = idm::make_ptr<ps3_process_info_t>();
+		const u32 proc_id = idm::last_id();
+		if (!proc)
+		{
+			sys_log.fatal("Failed to create process object");
+			return game_boot_result::generic_error;
+		}
+
 		// Special boot mode (directory scan)
 		if (!add_only && fs::is_dir(m_path))
 		{
@@ -843,7 +858,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 			argv[0] = "/dev_bdvd/PS3_GAME/USRDIR/EBOOT.BIN";
 			m_dir = "/dev_bdvd/PS3_GAME";
 
-			g_fxo->init<named_thread>("SPRX Loader"sv, [this]
+			g_fxo->init<named_thread>("SPRX Loader"sv, [this, proc]
 			{
 				std::string path;
 				std::vector<std::string> dir_queue;
@@ -897,7 +912,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 					{
 						auto& _main = g_fxo->get<ppu_module>();
 
-						ppu_load_exec(obj);
+						ppu_load_exec(obj, proc);
 
 						_main.path = path;
 
@@ -923,7 +938,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 					return;
 				}
 
-				ppu_precompile(dir_queue, nullptr);
+				ppu_precompile(dir_queue, nullptr, proc);
 
 				// Exit "process"
 				CallFromMainThread([]
@@ -1319,7 +1334,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 				elf_file.open(decrypted_path);
 			}
 			// Decrypt SELF
-			else if ((elf_file = decrypt_self(std::move(elf_file), klic.empty() ? nullptr : reinterpret_cast<u8*>(&klic[0]), &g_ps3_process_info.self_info)))
+			else if ((elf_file = decrypt_self(std::move(elf_file), klic.empty() ? nullptr : reinterpret_cast<u8*>(&klic[0]), &proc->self_info)))
 			{
 				if (true)
 				{
@@ -1338,7 +1353,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 		}
 		else
 		{
-			g_ps3_process_info.self_info.valid = false;
+			proc->self_info.valid = false;
 		}
 
 		if (!elf_file)
@@ -1431,7 +1446,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 			g_fxo->init<id_manager::id_map<lv2_obj>>();
 			g_fxo->init<id_manager::id_map<named_thread<ppu_thread>>>();
 
-			if (ppu_load_exec(ppu_exec))
+			if (ppu_load_exec(ppu_exec, proc))
 			{
 				ConfigurePPUCache();
 
@@ -1442,7 +1457,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 				GetCallbacks().init_mouse_handler();
 			}
 			// Overlay (OVL) executable (only load it)
-			else if (vm::map(0x3000'0000, 0x1000'0000, 0x200); !ppu_load_overlay(ppu_exec, m_path).first)
+			else if (vm::map(0x3000'0000, 0x1000'0000, 0x200); !ppu_load_overlay(ppu_exec, m_path, proc).first)
 			{
 				ppu_exec.set_error(elf_error::header_type);
 			}
@@ -1466,7 +1481,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 			// PPU PRX
 			GetCallbacks().on_ready();
 			g_fxo->init(false);
-			ppu_load_prx(ppu_prx, m_path);
+			ppu_load_prx(ppu_prx, m_path, proc);
 			Pause(true);
 		}
 		else if (spu_exec.open(elf_file) == elf_error::ok)
@@ -1474,7 +1489,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 			// SPU executable
 			GetCallbacks().on_ready();
 			g_fxo->init(false);
-			spu_load_exec(spu_exec);
+			spu_load_exec(spu_exec, proc);
 			Pause(true);
 		}
 		else if (spu_rel.open(elf_file) == elf_error::ok)
@@ -1482,7 +1497,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 			// SPU linker file
 			GetCallbacks().on_ready();
 			g_fxo->init(false);
-			spu_load_rel_exec(spu_rel);
+			spu_load_rel_exec(spu_rel, proc);
 			Pause(true);
 		}
 		else if (ppu_rel.open(elf_file) == elf_error::ok)
@@ -1490,7 +1505,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 			// PPU linker file
 			GetCallbacks().on_ready();
 			g_fxo->init(false);
-			ppu_load_rel_exec(ppu_rel);
+			ppu_load_rel_exec(ppu_rel, proc);
 			Pause(true);
 		}
 		else
@@ -1884,7 +1899,7 @@ void Emulator::Kill(bool allow_autoexit)
 
 	cpu_thread::cleanup();
 
-	g_fxo->reset();
+	g_fxo->reset(); // FIXME: deinit order problem (maybe)
 
 	sys_log.notice("All threads have been stopped.");
 

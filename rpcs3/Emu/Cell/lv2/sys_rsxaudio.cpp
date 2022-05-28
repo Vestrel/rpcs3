@@ -740,6 +740,11 @@ void rsxaudio_data_thread::operator()()
 {
 	thread_ctrl::scoped_priority high_prio(+1);
 
+	idm::select<ps3_process_info_t>([&](u32, ps3_process_info_t& info)
+	{
+		vm::load_mem_map(info.mem_map);
+	});
+
 	while (thread_ctrl::state() != thread_state::aborting)
 	{
 		static const std::function<void()> tmr_callback = [this]() { extract_audio_data(); };

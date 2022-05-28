@@ -134,13 +134,13 @@ void fmt_class_string<typename ppu_thread::call_history_t>::format(std::string& 
 extern const ppu_decoder<ppu_itype> g_ppu_itype{};
 extern const ppu_decoder<ppu_iname> g_ppu_iname{};
 
-extern void ppu_initialize();
+extern void ppu_initialize(std::shared_ptr<ps3_process_info_t> process);
 extern void ppu_finalize(const ppu_module& info);
 extern bool ppu_initialize(const ppu_module& info, bool = false);
 static void ppu_initialize2(class jit_compiler& jit, const ppu_module& module_part, const std::string& cache_path, const std::string& obj_name);
-extern std::pair<std::shared_ptr<lv2_overlay>, CellError> ppu_load_overlay(const ppu_exec_object&, const std::string& path, s64 file_offset);
+extern std::pair<std::shared_ptr<lv2_overlay>, CellError> ppu_load_overlay(const ppu_exec_object&, const std::string& path, std::shared_ptr<ps3_process_info_t>, s64 file_offset);
 extern void ppu_unload_prx(const lv2_prx&);
-extern std::shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object&, const std::string&, s64 file_offset);
+extern std::shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object&, const std::string&, std::shared_ptr<ps3_process_info_t>, s64 file_offset);
 extern void ppu_execute_syscall(ppu_thread& ppu, u64 code);
 static void ppu_break(ppu_thread&, ppu_opcode_t, be_t<u32>*, ppu_intrp_func*);
 
@@ -1238,7 +1238,7 @@ void ppu_thread::cpu_task()
 				thread_ctrl::wait_on(g_fxo->get<rsx::thread>().is_inited, false);
 			}
 
-			ppu_initialize(), spu_cache::initialize();
+			ppu_initialize(process), spu_cache::initialize();
 
 			// Wait until the progress dialog is closed.
 			// We don't want to open a cell dialog while a native progress dialog is still open.
@@ -1341,8 +1341,8 @@ ppu_thread::~ppu_thread()
 	perf_log.notice("Perf stats for instructions: total %u", exec_bytes / 4);
 }
 
-ppu_thread::ppu_thread(const ppu_thread_params& param, std::string_view name, u32 prio, int detached)
-	: cpu_thread(idm::last_id())
+ppu_thread::ppu_thread(const ppu_thread_params& param, std::string_view name, u32 prio, std::shared_ptr<ps3_process_info_t> process, int detached)
+	: cpu_thread(idm::last_id(), process)
 	, prio(prio)
 	, stack_size(param.stack_size)
 	, stack_addr(param.stack_addr)
@@ -2357,7 +2357,7 @@ extern void ppu_finalize(const ppu_module& info)
 #endif
 }
 
-extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<lv2_prx*>* loaded_prx)
+extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<lv2_prx*>* loaded_prx, std::shared_ptr<ps3_process_info_t> process)
 {
 	if (g_cfg.core.ppu_decoder != ppu_decoder_type::llvm)
 	{
@@ -2378,7 +2378,7 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<lv2_
 
 	// Map fixed address executables area, fake overlay support
 	const bool had_ovl = !vm::map(0x3000'0000, 0x1000'0000, 0x202).operator bool();
-	const u32 ppc_seg = std::exchange(g_ps3_process_info.ppc_seg, 0x3);
+	const u32 ppc_seg = std::exchange(process->ppc_seg, 0x3);
 
 	std::vector<std::pair<std::string, u64>> file_queue;
 	file_queue.reserve(2000);
@@ -2533,6 +2533,8 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<lv2_
 		// Set low priority
 		thread_ctrl::scoped_priority low_prio(-1);
 
+		vm::load_mem_map(process->mem_map);
+
 		for (usz func_i = fnext++; func_i < file_queue.size(); func_i = fnext++, g_progr_fdone++)
 		{
 			if (Emu.IsStopped())
@@ -2577,7 +2579,7 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<lv2_
 			{
 				std::unique_lock lock(sprx_mtx);
 
-				if (auto prx = ppu_load_prx(obj, path, offset))
+				if (auto prx = ppu_load_prx(obj, path, process, offset))
 				{
 					lock.unlock();
 					obj.clear(), src.close(); // Clear decrypted file and elf object memory
@@ -2601,7 +2603,7 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<lv2_
 					// Only one thread compiles OVL atm, other can compile PRX cuncurrently
 					std::unique_lock lock(ovl_mtx);
 
-					auto [ovlm, error] = ppu_load_overlay(obj, path, offset);
+					auto [ovlm, error] = ppu_load_overlay(obj, path, process, offset);
 
 					if (error)
 					{
@@ -2646,10 +2648,10 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<lv2_
 		ensure(vm::unmap(0x3000'0000).second);
 	}
 
-	g_ps3_process_info.ppc_seg = ppc_seg;
+	process->ppc_seg = ppc_seg;
 }
 
-extern void ppu_initialize()
+extern void ppu_initialize(std::shared_ptr<ps3_process_info_t> process)
 {
 	auto& _main = g_fxo->get<ppu_module>();
 
@@ -2705,7 +2707,7 @@ extern void ppu_initialize()
 		dir_queue.insert(std::end(dir_queue), std::begin(dirs), std::end(dirs));
 	}
 
-	ppu_precompile(dir_queue, &prx_list);
+	ppu_precompile(dir_queue, &prx_list, process);
 
 	if (Emu.IsStopped())
 	{
@@ -3186,6 +3188,11 @@ bool ppu_initialize(const ppu_module& info, bool check_only)
 		{
 			// Set low priority
 			thread_ctrl::scoped_priority low_prio(-1);
+
+			idm::select<ps3_process_info_t>([&](u32, ps3_process_info_t& info)
+	{
+		vm::load_mem_map(info.mem_map);
+	});
 
 			for (u32 i = work_cv++; i < workload.size(); i = work_cv++, g_progr_pdone++)
 			{

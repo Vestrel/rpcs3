@@ -62,7 +62,7 @@ void fmt_class_string<spu_stop_syscall>::format(std::string& out, u64 arg)
 		case SYS_SPU_THREAD_STOP_TRY_RECEIVE_EVENT: return "sys_spu_thread_tryreceive_event";
 		case SYS_SPU_THREAD_STOP_SWITCH_SYSTEM_MODULE: return "sys_spu_thread_switch_system_module";
 		}
-		
+
 		return unknown;
 	});
 }
@@ -559,7 +559,7 @@ error_code sys_spu_thread_initialize(ppu_thread& ppu, vm::ptr<u32> thread, u32 g
 
 	ensure(idm::import<named_thread<spu_thread>>([&]()
 	{
-		const auto spu = std::make_shared<named_thread<spu_thread>>(group.get(), spu_num, thread_name, tid, false, option);
+		const auto spu = std::make_shared<named_thread<spu_thread>>(group.get(), spu_num, thread_name, tid, ppu.process, false, option);
 		group->threads[inited] = spu;
 		group->threads_map[spu_num] = static_cast<s8>(inited);
 		return spu;
@@ -646,7 +646,7 @@ error_code sys_spu_thread_group_create(ppu_thread& ppu, vm::ptr<u32> id, u32 num
 
 	sys_spu.warning("sys_spu_thread_group_create(id=*0x%x, num=%d, prio=%d, attr=*0x%x)", id, num, prio, attr);
 
-	const s32 min_prio = g_ps3_process_info.has_root_perm() ? 0 : 16;
+	const s32 min_prio = ppu.process->has_root_perm() ? 0 : 16;
 
 	if (attr->nsize > 0x80 || !num)
 	{
@@ -1314,7 +1314,7 @@ error_code sys_spu_thread_group_set_priority(ppu_thread& ppu, u32 id, s32 priori
 		return CELL_ESRCH;
 	}
 
-	if (!group->has_scheduler_context || priority < (g_ps3_process_info.has_root_perm() ? 0 : 16) || priority > 255)
+	if (!group->has_scheduler_context || priority < (ppu.process->has_root_perm() ? 0 : 16) || priority > 255)
 	{
 		return CELL_EINVAL;
 	}
@@ -2019,7 +2019,7 @@ error_code sys_raw_spu_create(ppu_thread& ppu, vm::ptr<u32> id, vm::ptr<void> at
 			index = 0;
 	}
 
-	const u32 tid = idm::make<named_thread<spu_thread>>(nullptr, index, "", index);
+	const u32 tid = idm::make<named_thread<spu_thread>>(nullptr, index, "", index, ppu.process);
 
 	spu_thread::g_raw_spu_id[index] = (ensure(tid));
 
@@ -2074,7 +2074,7 @@ error_code sys_isolated_spu_create(ppu_thread& ppu, vm::ptr<u32> id, vm::ptr<voi
 
 	const u32 ls_addr = RAW_SPU_BASE_ADDR + RAW_SPU_OFFSET * index;
 
-	const auto thread = idm::make_ptr<named_thread<spu_thread>>(nullptr, index, "", index, true);
+	const auto thread = idm::make_ptr<named_thread<spu_thread>>(nullptr, index, "", index, ppu.process, true);
 
 	thread->gpr[3] = v128::from64(0, arg1);
 	thread->gpr[4] = v128::from64(0, arg2);

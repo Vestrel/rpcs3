@@ -30,7 +30,7 @@ void fmt_class_string<sys_ss_rng_error>::format(std::string& out, u64 arg)
 
 LOG_CHANNEL(sys_ss);
 
-error_code sys_ss_random_number_generator(u64 pkg_id, vm::ptr<void> buf, u64 size)
+error_code sys_ss_random_number_generator(ppu_thread &ppu, u64 pkg_id, vm::ptr<void> buf, u64 size)
 {
 	sys_ss.warning("sys_ss_random_number_generator(pkg_id=%u, buf=*0x%x, size=0x%x)", pkg_id, buf, size);
 
@@ -38,7 +38,7 @@ error_code sys_ss_random_number_generator(u64 pkg_id, vm::ptr<void> buf, u64 siz
 	{
 		if (pkg_id == 1)
 		{
-			if (!g_ps3_process_info.has_root_perm())
+			if (!ppu.process->has_root_perm())
 			{
 				return CELL_ENOSYS;
 			}
@@ -77,18 +77,18 @@ error_code sys_ss_random_number_generator(u64 pkg_id, vm::ptr<void> buf, u64 siz
 	return CELL_OK;
 }
 
-error_code sys_ss_access_control_engine(u64 pkg_id, u64 a2, u64 a3)
+error_code sys_ss_access_control_engine(ppu_thread &ppu, u64 pkg_id, u64 a2, u64 a3)
 {
 	sys_ss.todo("sys_ss_access_control_engine(pkg_id=0x%llx, a2=0x%llx, a3=0x%llx)", pkg_id, a2, a3);
 
-	const u64 authid = g_ps3_process_info.self_info.valid ?
-		g_ps3_process_info.self_info.app_info.authid : 0;
+	const u64 authid = ppu.process->self_info.valid ?
+		ppu.process->self_info.app_info.authid : 0;
 
 	switch (pkg_id)
 	{
 	case 0x1:
 	{
-		if (!g_ps3_process_info.debug_or_root())
+		if (!ppu.process->debug_or_root())
 		{
 			return CELL_ENOSYS;
 		}
@@ -109,7 +109,7 @@ error_code sys_ss_access_control_engine(u64 pkg_id, u64 a2, u64 a3)
 	}
 	case 0x3:
 	{
-		if (!g_ps3_process_info.debug_or_root())
+		if (!ppu.process->debug_or_root())
 		{
 			return CELL_ENOSYS;
 		}

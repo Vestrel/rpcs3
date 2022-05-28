@@ -175,7 +175,7 @@ struct cpu_prof
 			{
 				return;
 			}
-	
+
 			const std::string results = format(chart, samples, idle, true);
 			profiler.notice("All Threads: %u samples (%.4f%% idle):%s", samples, 100. * idle / samples, results);
 		}
@@ -445,6 +445,8 @@ namespace cpu_counter
 
 void cpu_thread::operator()()
 {
+	vm::load_mem_map(process->mem_map);
+
 	g_tls_this_thread = this;
 
 	if (g_cfg.core.thread_scheduler != thread_scheduler_mode::os)
@@ -597,8 +599,8 @@ cpu_thread::~cpu_thread()
 {
 }
 
-cpu_thread::cpu_thread(u32 id)
-	: id(id)
+cpu_thread::cpu_thread(u32 id, std::shared_ptr<ps3_process_info_t> process)
+	: id(id), process(process)
 {
 	while (Emu.GetStatus() == system_state::paused)
 	{

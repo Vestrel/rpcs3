@@ -18,8 +18,8 @@ struct CellSsOpenPSID
 	be_t<u64> low;
 };
 
-error_code sys_ss_random_number_generator(u64 pkg_id, vm::ptr<void> buf, u64 size);
-error_code sys_ss_access_control_engine(u64 pkg_id, u64 a2, u64 a3);
+error_code sys_ss_random_number_generator(ppu_thread &ppu, u64 pkg_id, vm::ptr<void> buf, u64 size);
+error_code sys_ss_access_control_engine(ppu_thread &ppu, u64 pkg_id, u64 a2, u64 a3);
 s32 sys_ss_get_console_id(vm::ptr<u8> buf);
 s32 sys_ss_get_open_psid(vm::ptr<CellSsOpenPSID> psid);
 error_code sys_ss_appliance_info_manager(u32 code, vm::ptr<u8> buffer);

@@ -212,7 +212,7 @@ public:
 	atomic_t<bool> is_working = false;
 
 	Demuxer(u32 addr, u32 size, vm::ptr<CellDmuxCbMsg> func, u32 arg)
-		: ppu_thread({}, "", 0)
+		: ppu_thread({}, "", {}, 0)
 		, memAddr(addr)
 		, memSize(size)
 		, cbFunc(func)

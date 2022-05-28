@@ -407,8 +407,8 @@ namespace rsx
 		g_access_violation_handler = nullptr;
 	}
 
-	thread::thread()
-		: cpu_thread(0x5555'5555)
+	thread::thread(std::shared_ptr<ps3_process_info_t> process)
+		: cpu_thread(0x5555'5555, process)
 	{
 		g_access_violation_handler = [this](u32 address, bool is_writing)
 		{

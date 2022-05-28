@@ -23,7 +23,7 @@ void ppu_remove_hle_instructions(u32 addr, u32 size);
 
 namespace vm
 {
-	static u8* memory_reserve_4GiB(void* _addr, u64 size = 0x100000000)
+	u8* memory_reserve_4GiB(void* _addr, u64 size)
 	{
 		for (u64 addr = reinterpret_cast<u64>(_addr) + 0x100000000; addr < 0x8000'0000'0000; addr += 0x100000000)
 		{
@@ -36,23 +36,23 @@ namespace vm
 		fmt::throw_exception("Failed to reserve vm memory");
 	}
 
+	// Hooks for memory R/W interception (default: zero offset to some function with only ret instructions)
+	u8* const g_hook_addr = memory_reserve_4GiB(reinterpret_cast<void*>(0x2'0000'0000), 0x800000000);
+
 	// Emulated virtual memory
-	u8* const g_base_addr = memory_reserve_4GiB(reinterpret_cast<void*>(0x2'0000'0000), 0x2'0000'0000);
+	thread_local u8* g_base_addr{};
 
 	// Unprotected virtual memory mirror
-	u8* const g_sudo_addr = g_base_addr + 0x1'0000'0000;
+	thread_local u8* g_sudo_addr{};
 
 	// Auxiliary virtual memory for executable areas
-	u8* const g_exec_addr = memory_reserve_4GiB(g_sudo_addr, 0x200000000);
-
-	// Hooks for memory R/W interception (default: zero offset to some function with only ret instructions)
-	u8* const g_hook_addr = memory_reserve_4GiB(g_exec_addr, 0x800000000);
+	thread_local u8* g_exec_addr{};
 
 	// Stats for debugging
-	u8* const g_stat_addr = memory_reserve_4GiB(g_hook_addr);
+	thread_local u8* g_stat_addr{};
 
 	// For SPU
-	u8* const g_free_addr = g_stat_addr + 0x1'0000'0000;
+	u8* const g_free_addr = reinterpret_cast<u8*>(0x4000'0000'0000);
 
 	// Reservation stats
 	alignas(4096) u8 g_reservations[65536 / 128 * 64]{0};
@@ -80,6 +80,14 @@ namespace vm
 
 	// Memory pages
 	std::array<memory_page, 0x100000000 / 4096> g_pages;
+
+	void load_mem_map(const mem_map_t& map)
+	{
+		g_base_addr = map.base_addr;
+		g_sudo_addr = map.sudo_addr;
+		g_exec_addr = map.exec_addr;
+		g_stat_addr = map.stat_addr;
+	}
 
 	std::pair<bool, u64> try_reservation_update(u32 addr)
 	{
@@ -1672,20 +1680,6 @@ namespace vm
 
 		void init()
 		{
-			vm_log.notice("Guest memory bases address ranges:\n"
-			"vm::g_base_addr = %p - %p\n"
-			"vm::g_sudo_addr = %p - %p\n"
-			"vm::g_exec_addr = %p - %p\n"
-			"vm::g_hook_addr = %p - %p\n"
-			"vm::g_stat_addr = %p - %p\n"
-			"vm::g_reservations = %p - %p\n",
-			g_base_addr, g_base_addr + 0xffff'ffff,
-			g_sudo_addr, g_sudo_addr + 0xffff'ffff,
-			g_exec_addr, g_exec_addr + 0x200000000 - 1,
-			g_hook_addr, g_hook_addr + 0x800000000 - 1,
-			g_stat_addr, g_stat_addr + 0xffff'ffff,
-			g_reservations, g_reservations + sizeof(g_reservations) - 1);
-
 			std::memset(&g_pages, 0, sizeof(g_pages));
 
 			g_locations =
@@ -1723,10 +1717,6 @@ namespace vm
 
 			g_locations.clear();
 		}
-
-		utils::memory_decommit(g_base_addr, 0x200000000);
-		utils::memory_decommit(g_exec_addr, 0x200000000);
-		utils::memory_decommit(g_stat_addr, 0x100000000);
 
 #ifdef _WIN32
 		s_hook.unmap(g_hook_addr);

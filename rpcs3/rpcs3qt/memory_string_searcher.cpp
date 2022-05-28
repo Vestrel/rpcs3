@@ -4,6 +4,7 @@
 #include "Emu/CPU/CPUDisAsm.h"
 #include "Emu/Cell/SPUDisAsm.h"
 #include "Emu/IdManager.h"
+#include "Emu/Cell/lv2/sys_process.h"
 
 #include "Utilities/Thread.h"
 #include "Utilities/StrUtil.h"
@@ -318,6 +319,11 @@ u64 memory_string_searcher::OnSearch(std::string wstr, int mode)
 
 	const named_thread_group workers("Memory Searcher "sv, max_threads, [&]()
 	{
+		idm::select<ps3_process_info_t>([&](u32, ps3_process_info_t& info)
+	{
+		vm::load_mem_map(info.mem_map);
+	});
+
 		if (mode == as_inst || mode == as_fake_spu_inst)
 		{
 			auto disasm = m_disasm->copy_type_erased();

@@ -313,7 +313,7 @@ public:
 	bool use_ats_headers;
 
 	AudioDecoder(s32 type, u32 addr, u32 size, vm::ptr<CellAdecCbMsg> func, u32 arg)
-		: ppu_thread({}, "", 0)
+		: ppu_thread({}, "", {}, 0)
 		, type(type)
 		, memAddr(addr)
 		, memSize(size)

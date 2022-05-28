@@ -891,7 +891,7 @@ static void ppu_check_patch_spu_images(const ppu_segment& seg)
 	}
 }
 
-void try_spawn_ppu_if_exclusive_program(const ppu_module& m)
+void try_spawn_ppu_if_exclusive_program(const ppu_module& m, std::shared_ptr<ps3_process_info_t> process)
 {
 	// If only PRX/OVL has been loaded at Emu.BootGame(), launch a single PPU thread so its memory can be viewed
 	if (Emu.IsReady() && g_fxo->get<ppu_module>().segs.empty())
@@ -902,7 +902,7 @@ void try_spawn_ppu_if_exclusive_program(const ppu_module& m)
 			.stack_size = SYS_PROCESS_PARAM_STACK_SIZE_MAX,
 		};
 
-		auto ppu = idm::make_ptr<named_thread<ppu_thread>>(p, "test_thread", 0);
+		auto ppu = idm::make_ptr<named_thread<ppu_thread>>(p, "test_thread", 0, process);
 
 		ppu->cia = m.funcs.empty() ? m.secs[0].addr : m.funcs[0].addr;
 
@@ -911,7 +911,7 @@ void try_spawn_ppu_if_exclusive_program(const ppu_module& m)
 	}
 }
 
-std::shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object& elf, const std::string& path, s64 file_offset)
+std::shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object& elf, const std::string& path, std::shared_ptr<ps3_process_info_t> process, s64 file_offset)
 {
 	if (elf != elf_error::ok)
 	{
@@ -1239,7 +1239,7 @@ std::shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object& elf, const std::stri
 
 	prx->analyse(toc, 0, end, applied);
 
-	try_spawn_ppu_if_exclusive_program(*prx);
+	try_spawn_ppu_if_exclusive_program(*prx, process);
 
 	return prx;
 }
@@ -1293,7 +1293,7 @@ void ppu_unload_prx(const lv2_prx& prx)
 	}
 }
 
-bool ppu_load_exec(const ppu_exec_object& elf)
+bool ppu_load_exec(const ppu_exec_object& elf, std::shared_ptr<ps3_process_info_t> process)
 {
 	if (elf != elf_error::ok)
 	{
@@ -1495,11 +1495,11 @@ bool ppu_load_exec(const ppu_exec_object& elf)
 	}
 
 	// Read control flags (0 if doesn't exist)
-	g_ps3_process_info.ctrl_flags1 = 0;
+	process->ctrl_flags1 = 0;
 
-	if (bool not_found = g_ps3_process_info.self_info.valid)
+	if (bool not_found = process->self_info.valid)
 	{
-		for (const auto& ctrl : g_ps3_process_info.self_info.ctrl_info)
+		for (const auto& ctrl : process->self_info.ctrl_info)
 		{
 			if (ctrl.type == 1)
 			{
@@ -1510,12 +1510,12 @@ bool ppu_load_exec(const ppu_exec_object& elf)
 					break;
 				}
 
-				g_ps3_process_info.ctrl_flags1 |= ctrl.control_flags.ctrl_flag1;
+				process->ctrl_flags1 |= ctrl.control_flags.ctrl_flag1;
 			}
 		}
 
 		ppu_loader.notice("SELF header information found: ctrl_flags1=0x%x, authid=0x%llx",
-			g_ps3_process_info.ctrl_flags1, g_ps3_process_info.self_info.app_info.authid);
+			process->ctrl_flags1, process->self_info.app_info.authid);
 	}
 
 	// Load other programs
@@ -1574,7 +1574,7 @@ bool ppu_load_exec(const ppu_exec_object& elf)
 					sdk_version = info.sdk_version;
 
 					if (s32 prio = info.primary_prio; prio < 3072
-						&& (prio >= (g_ps3_process_info.debug_or_root() ? 0 : -512)))
+						&& (prio >= (process->debug_or_root() ? 0 : -512)))
 					{
 						primary_prio = prio;
 					}
@@ -1656,7 +1656,7 @@ bool ppu_load_exec(const ppu_exec_object& elf)
 		load_libs.emplace("libsysmodule.sprx");
 	}
 
-	if (g_ps3_process_info.get_cellos_appname() == "vsh.self"sv)
+	if (process->get_cellos_appname() == "vsh.self"sv)
 	{
 		// Cannot be used with vsh.self (it self-manages itself)
 		load_libs.clear();
@@ -1684,7 +1684,7 @@ bool ppu_load_exec(const ppu_exec_object& elf)
 			{
 				ppu_loader.warning("Loading library: %s", name);
 
-				auto prx = ppu_load_prx(obj, lle_dir + name, 0);
+				auto prx = ppu_load_prx(obj, lle_dir + name, process, 0);
 
 				if (prx->funcs.empty())
 				{
@@ -1724,10 +1724,10 @@ bool ppu_load_exec(const ppu_exec_object& elf)
 	_main.validate(0);
 
 	// Set SDK version
-	g_ps3_process_info.sdk_ver = sdk_version;
+	process->sdk_ver = sdk_version;
 
 	// Set ppc fixed allocations segment permission
-	g_ps3_process_info.ppc_seg = ppc_seg;
+	process->ppc_seg = ppc_seg;
 
 	if (ppc_seg != 0x0)
 	{
@@ -1793,7 +1793,7 @@ bool ppu_load_exec(const ppu_exec_object& elf)
 	p.stack_addr = vm::cast(vm::alloc(primary_stacksize, vm::stack, 4096));
 	p.stack_size = primary_stacksize;
 
-	auto ppu = idm::make_ptr<named_thread<ppu_thread>>(p, "main_thread", primary_prio, 1);
+	auto ppu = idm::make_ptr<named_thread<ppu_thread>>(p, "main_thread", primary_prio, process, 1);
 
 	// Write initial data (exitspawn)
 	if (!Emu.data.empty())
@@ -1804,7 +1804,7 @@ bool ppu_load_exec(const ppu_exec_object& elf)
 
 	// Initialize memory stats (according to sdk version)
 	u32 mem_size;
-	if (g_ps3_process_info.get_cellos_appname() == "vsh.self"sv)
+	if (process->get_cellos_appname() == "vsh.self"sv)
 	{
 		// Because vsh.self comes before any generic application, more memory is available to it
 		mem_size = 0xF000000;
@@ -1844,7 +1844,7 @@ bool ppu_load_exec(const ppu_exec_object& elf)
 
 	ppu->cmd_push({ppu_cmd::initialize, 0});
 
-	if (!entry && g_ps3_process_info.get_cellos_appname() != "vsh.self"sv)
+	if (!entry && process->get_cellos_appname() != "vsh.self"sv)
 	{
 		// Set TLS args, call sys_initialize_tls
 		ppu->cmd_list
@@ -1901,7 +1901,7 @@ bool ppu_load_exec(const ppu_exec_object& elf)
 	return true;
 }
 
-std::pair<std::shared_ptr<lv2_overlay>, CellError> ppu_load_overlay(const ppu_exec_object& elf, const std::string& path, s64 file_offset)
+std::pair<std::shared_ptr<lv2_overlay>, CellError> ppu_load_overlay(const ppu_exec_object& elf, const std::string& path, std::shared_ptr<ps3_process_info_t> process, s64 file_offset)
 {
 	if (elf != elf_error::ok)
 	{
@@ -2148,12 +2148,12 @@ std::pair<std::shared_ptr<lv2_overlay>, CellError> ppu_load_overlay(const ppu_ex
 
 	idm::import_existing<lv2_obj, lv2_overlay>(ovlm);
 
-	try_spawn_ppu_if_exclusive_program(*ovlm);
+	try_spawn_ppu_if_exclusive_program(*ovlm, process);
 
 	return {std::move(ovlm), {}};
 }
 
-bool ppu_load_rel_exec(const ppu_rel_object& elf)
+bool ppu_load_rel_exec(const ppu_rel_object& elf, std::shared_ptr<ps3_process_info_t> process)
 {
 	ppu_module relm{};
 
@@ -2218,7 +2218,7 @@ bool ppu_load_rel_exec(const ppu_rel_object& elf)
 		const auto& s = *ptr;
 
 		ppu_loader.notice("** Section: sh_type=0x%x, addr=0x%llx, size=0x%llx, flags=0x%x", std::bit_cast<u32>(s.sh_type), s.sh_addr, s.sh_size, s._sh_flags);
-	
+
 		if (s.sh_type == sec_type::sht_progbits && s.sh_size && s.sh_flags().all_of(sh_flag::shf_alloc))
 		{
 			ppu_segment _sec;
@@ -2236,7 +2236,7 @@ bool ppu_load_rel_exec(const ppu_rel_object& elf)
 		}
 	}
 
-	try_spawn_ppu_if_exclusive_program(relm);
+	try_spawn_ppu_if_exclusive_program(relm, process);
 
 	error_handler.errored = false;
 

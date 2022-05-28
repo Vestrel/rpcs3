@@ -1,7 +1,7 @@
 #pragma once
 
 #include "key_vault.h"
-#include "zlib.h"
+#include "3rdparty/zlib/zlib/zlib.h"
 
 #include "util/types.hpp"
 #include "Utilities/File.h"

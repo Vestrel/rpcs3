@@ -8,6 +8,8 @@
 #include "Program/ProgramStateCache.h"
 #include "Common/texture_cache_checker.h"
 #include "Overlays/Shaders/shader_loading_dialog.h"
+#include "Emu/Cell/lv2/sys_process.h"
+#include "Emu/IdManager.h"
 
 #include <chrono>
 #include <unordered_map>
@@ -165,6 +167,10 @@ namespace rsx
 			{
 				named_thread_group workers("RSX Worker ", nb_workers, [&]()
 				{
+					idm::select<ps3_process_info_t>([&](u32, ps3_process_info_t& info)
+	{
+		vm::load_mem_map(info.mem_map);
+	});
 					worker(entry_count);
 				});
 

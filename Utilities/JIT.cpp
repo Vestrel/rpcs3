@@ -385,7 +385,7 @@ const bool jit_initialize = []() -> bool
 
 namespace vm
 {
-	extern u8* const g_sudo_addr;
+	extern u8* g_sudo_addr;
 }
 
 static shared_mutex null_mtx;

@@ -820,7 +820,7 @@ namespace rsx
 		static constexpr auto thread_name = "rsx::thread"sv;
 
 	protected:
-		thread();
+		thread(std::shared_ptr<ps3_process_info_t> process);
 		virtual void on_task();
 		virtual void on_exit();
 

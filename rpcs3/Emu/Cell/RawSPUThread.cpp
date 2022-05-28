@@ -318,11 +318,11 @@ bool spu_thread::write_reg(const u32 addr, const u32 value)
 	return false;
 }
 
-void spu_load_exec(const spu_exec_object& elf)
+void spu_load_exec(const spu_exec_object& elf, std::shared_ptr<ps3_process_info_t> process)
 {
 	spu_thread::g_raw_spu_ctr++;
 
-	auto spu = idm::make_ptr<named_thread<spu_thread>>(nullptr, 0, "test_spu", 0);
+	auto spu = idm::make_ptr<named_thread<spu_thread>>(nullptr, 0, "test_spu", 0, process);
 
 	for (const auto& prog : elf.progs)
 	{
@@ -338,11 +338,11 @@ void spu_load_exec(const spu_exec_object& elf)
 	atomic_storage<u32>::release(spu->pc, elf.header.e_entry);
 }
 
-void spu_load_rel_exec(const spu_rel_object& elf)
+void spu_load_rel_exec(const spu_rel_object& elf, std::shared_ptr<ps3_process_info_t> process)
 {
 	spu_thread::g_raw_spu_ctr++;
 
-	auto spu = idm::make_ptr<named_thread<spu_thread>>(nullptr, 0, "test_spu", 0);
+	auto spu = idm::make_ptr<named_thread<spu_thread>>(nullptr, 0, "test_spu", 0, process);
 
 	u64 total_memsize = 0;
 

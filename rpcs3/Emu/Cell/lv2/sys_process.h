@@ -3,6 +3,7 @@
 #include "Crypto/unself.h"
 #include "Emu/Memory/vm_ptr.h"
 #include "Emu/Cell/ErrorCodes.h"
+#include "Utilities/mutex.h"
 
 // Process Local Object Type
 enum : u32
@@ -85,10 +86,21 @@ struct sys_exit2_param
 
 struct ps3_process_info_t
 {
+	static constexpr u32 id_base = 1;
+	static constexpr u32 id_step = 1;
+	static constexpr u32 id_count = 8192;
+
+	shared_mutex mutex{};
+
+	vm::mem_map_t mem_map{};
+
 	u32 sdk_ver;
 	u32 ppc_seg;
 	SelfAdditionalInfo self_info;
 	u32 ctrl_flags1 = 0;
+
+	ps3_process_info_t();
+	~ps3_process_info_t();
 
 	bool has_root_perm() const;
 	bool has_debug_perm() const;
@@ -96,11 +108,9 @@ struct ps3_process_info_t
 	std::string_view get_cellos_appname() const;
 };
 
-extern ps3_process_info_t  g_ps3_process_info;
-
 // Auxiliary functions
 s32 process_getpid();
-s32 process_get_sdk_version(u32 pid, s32& ver);
+s32 process_get_sdk_version(ppu_thread &ppu, u32 pid, s32& ver);
 
 enum CellError : u32;
 CellError process_is_spu_lock_line_reservation_address(u32 addr, u64 flags);
@@ -110,9 +120,9 @@ s32 sys_process_getpid();
 s32 sys_process_getppid();
 error_code sys_process_get_number_of_object(u32 object, vm::ptr<u32> nump);
 error_code sys_process_get_id(u32 object, vm::ptr<u32> buffer, u32 size, vm::ptr<u32> set_size);
-error_code sys_process_get_id2(u32 object, vm::ptr<u32> buffer, u32 size, vm::ptr<u32> set_size);
+error_code sys_process_get_id2(ppu_thread &ppu, u32 object, vm::ptr<u32> buffer, u32 size, vm::ptr<u32> set_size);
 error_code _sys_process_get_paramsfo(vm::ptr<char> buffer);
-error_code sys_process_get_sdk_version(u32 pid, vm::ptr<s32> version);
+error_code sys_process_get_sdk_version(ppu_thread &ppu, u32 pid, vm::ptr<s32> version);
 error_code sys_process_get_status(u64 unk);
 error_code sys_process_is_spu_lock_line_reservation_address(u32 addr, u64 flags);
 error_code sys_process_kill(u32 pid);

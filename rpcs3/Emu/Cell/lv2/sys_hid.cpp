@@ -140,11 +140,11 @@ error_code sys_hid_manager_514(u32 pkg_id, vm::ptr<void> buf, u64 buf_size)
 	return CELL_OK;
 }
 
-error_code sys_hid_manager_is_process_permission_root(u32 pid)
+error_code sys_hid_manager_is_process_permission_root(ppu_thread &ppu, u32 pid)
 {
 	sys_hid.todo("sys_hid_manager_is_process_permission_root(pid=0x%x)", pid);
 
-	return not_an_error(g_ps3_process_info.has_root_perm());
+	return not_an_error(ppu.process->has_root_perm());
 }
 
 error_code sys_hid_manager_add_hot_key_observer(u32 event_queue, vm::ptr<u32> unk)

@@ -621,6 +621,11 @@ void cell_audio_thread::operator()()
 
 	thread_ctrl::scoped_priority high_prio(+1);
 
+	idm::select<ps3_process_info_t>([&](u32, ps3_process_info_t& info)
+	{
+		vm::load_mem_map(info.mem_map);
+	});
+
 	u32 untouched_expected = 0;
 
 	// Main cellAudio loop
@@ -1512,7 +1517,7 @@ static error_code AudioCreateNotifyEventQueue(ppu_thread& ppu, vm::ptr<u32> id, 
 
 		// This originally reads from a global sdk value set by cellAudioInit
 		// So check initialization as well
-		const u32 queue_depth = g_fxo->get<cell_audio>().init && g_ps3_process_info.sdk_ver <= 0x35FFFF ? 2 : 8;
+		const u32 queue_depth = g_fxo->get<cell_audio>().init && ppu.process->sdk_ver <= 0x35FFFF ? 2 : 8;
 
 		if (CellError res{sys_event_queue_create(ppu, id, attr, key_value, queue_depth) + 0u})
 		{

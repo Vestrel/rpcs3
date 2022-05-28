@@ -15,10 +15,11 @@ namespace utils
 
 namespace vm
 {
-	extern u8* const g_base_addr;
-	extern u8* const g_sudo_addr;
-	extern u8* const g_exec_addr;
-	extern u8* const g_stat_addr;
+	extern thread_local u8* g_base_addr;
+	extern thread_local u8* g_sudo_addr;
+	extern thread_local u8* g_exec_addr;
+	extern thread_local u8* g_stat_addr;
+	extern u8* const g_hook_addr;
 	extern u8* const g_free_addr;
 	extern u8 g_reservations[];
 
@@ -52,11 +53,24 @@ namespace vm
 		page_allocated          = (1 << 7),
 	};
 
+	struct mem_map_t
+	{
+		u8* base_addr{};
+		u8* sudo_addr{};
+		u8* exec_addr{};
+		u8* stat_addr{};
+	};
+
 	// Address type
 	enum addr_t : u32 {};
 
 	// Page information
 	using memory_page = atomic_t<u8>;
+
+	u8* memory_reserve_4GiB(void* _addr, u64 size = 0x100000000);
+
+	// Load process memory map
+	void load_mem_map(const mem_map_t& map);
 
 	// Change memory protection of specified memory region
 	bool page_protect(u32 addr, u32 size, u8 flags_test = 0, u8 flags_set = 0, u8 flags_clear = 0);

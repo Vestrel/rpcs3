@@ -1664,7 +1664,7 @@ error_code sys_uart_initialize(ppu_thread &ppu)
 
 	sys_uart.trace("sys_uart_initialize()");
 
-	if (!g_ps3_process_info.has_root_perm())
+	if (!ppu.process->has_root_perm())
 	{
 		return CELL_ENOSYS;
 	}
@@ -1683,7 +1683,7 @@ error_code sys_uart_receive(ppu_thread &ppu, vm::ptr<void> buffer, u64 size, u32
 {
 	sys_uart.trace("sys_uart_receive(buffer=*0x%x, size=0x%llx, mode=0x%x)", buffer, size, mode);
 
-	if (!g_ps3_process_info.has_root_perm())
+	if (!ppu.process->has_root_perm())
 	{
 		return CELL_ENOSYS;
 	}
@@ -1792,7 +1792,7 @@ error_code sys_uart_send(ppu_thread &ppu, vm::cptr<void> buffer, u64 size, u32 m
 {
 	sys_uart.trace("sys_uart_send(buffer=0x%x, size=0x%llx, mode=0x%x)", buffer, size, mode);
 
-	if (!g_ps3_process_info.has_root_perm())
+	if (!ppu.process->has_root_perm())
 	{
 		return CELL_ENOSYS;
 	}
@@ -1932,11 +1932,11 @@ error_code sys_uart_send(ppu_thread &ppu, vm::cptr<void> buffer, u64 size, u32 m
 	return not_an_error(size);
 }
 
-error_code sys_uart_get_params(vm::ptr<vuart_params> buffer)
+error_code sys_uart_get_params(ppu_thread &ppu, vm::ptr<vuart_params> buffer)
 {
 	sys_uart.trace("sys_uart_get_params(buffer=0x%x)", buffer);
 
-	if (!g_ps3_process_info.has_root_perm())
+	if (!ppu.process->has_root_perm())
 	{
 		return CELL_ENOSYS;
 	}

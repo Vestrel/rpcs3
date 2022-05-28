@@ -288,7 +288,7 @@ error_code sys_ppu_thread_set_priority(ppu_thread& ppu, u32 thread_id, s32 prio)
 
 	sys_ppu_thread.trace("sys_ppu_thread_set_priority(thread_id=0x%x, prio=%d)", thread_id, prio);
 
-	if (prio < (g_ps3_process_info.debug_or_root() ? -512 : 0) || prio > 3071)
+	if (prio < (ppu.process->debug_or_root() ? -512 : 0) || prio > 3071)
 	{
 		return CELL_EINVAL;
 	}
@@ -347,7 +347,7 @@ error_code sys_ppu_thread_stop(ppu_thread& ppu, u32 thread_id)
 
 	sys_ppu_thread.todo("sys_ppu_thread_stop(thread_id=0x%x)", thread_id);
 
-	if (!g_ps3_process_info.has_root_perm())
+	if (!ppu.process->has_root_perm())
 	{
 		return CELL_ENOSYS;
 	}
@@ -368,7 +368,7 @@ error_code sys_ppu_thread_restart(ppu_thread& ppu)
 
 	sys_ppu_thread.todo("sys_ppu_thread_restart()");
 
-	if (!g_ps3_process_info.has_root_perm())
+	if (!ppu.process->has_root_perm())
 	{
 		return CELL_ENOSYS;
 	}
@@ -391,7 +391,7 @@ error_code _sys_ppu_thread_create(ppu_thread& ppu, vm::ptr<u64> thread_id, vm::p
 		return CELL_EFAULT;
 	}
 
-	if (prio < (g_ps3_process_info.debug_or_root() ? -512 : 0) || prio > 3071)
+	if (prio < (ppu.process->debug_or_root() ? -512 : 0) || prio > 3071)
 	{
 		return CELL_EINVAL;
 	}
@@ -442,7 +442,7 @@ error_code _sys_ppu_thread_create(ppu_thread& ppu, vm::ptr<u64> thread_id, vm::p
 		p.arg0 = arg;
 		p.arg1 = unk;
 
-		return std::make_shared<named_thread<ppu_thread>>(p, ppu_name, prio, 1 - static_cast<int>(flags & 3));
+		return std::make_shared<named_thread<ppu_thread>>(p, ppu_name, prio, ppu.process, 1 - static_cast<int>(flags & 3));
 	});
 
 	if (!tid)

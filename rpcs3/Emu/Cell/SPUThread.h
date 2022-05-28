@@ -639,7 +639,7 @@ public:
 	static const u32 id_step = 1;
 	static const u32 id_count = (0xFFFC0000 - SPU_FAKE_BASE_ADDR) / SPU_LS_SIZE;
 
-	spu_thread(lv2_spu_group* group, u32 index, std::string_view name, u32 lv2_id, bool is_isolated = false, u32 option = 0);
+	spu_thread(lv2_spu_group* group, u32 index, std::string_view name, u32 lv2_id, std::shared_ptr<ps3_process_info_t> process, bool is_isolated = false, u32 option = 0);
 
 	spu_thread(const spu_thread&) = delete;
 	spu_thread& operator=(const spu_thread&) = delete;

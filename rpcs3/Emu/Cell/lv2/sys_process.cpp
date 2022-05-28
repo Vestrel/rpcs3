@@ -4,6 +4,7 @@
 #include "Emu/System.h"
 #include "Emu/VFS.h"
 #include "Emu/IdManager.h"
+#include "util/vm.hpp"
 
 #include "Crypto/unedat.h"
 #include "Emu/Cell/ErrorCodes.h"
@@ -26,6 +27,39 @@
 #include "sys_vm.h"
 #include "sys_spu.h"
 
+LOG_CHANNEL(sys_process);
+
+ps3_process_info_t::ps3_process_info_t()
+{
+	mem_map.base_addr = vm::memory_reserve_4GiB(vm::g_hook_addr, 0x2'0000'0000);
+	mem_map.sudo_addr = mem_map.base_addr + 0x1'0000'0000;
+	mem_map.exec_addr = vm::memory_reserve_4GiB(mem_map.sudo_addr, 0x2'0000'0000);
+	mem_map.stat_addr = vm::memory_reserve_4GiB(mem_map.exec_addr);
+
+	sys_process.notice("New guest memory map was created. Address ranges:\n"
+	"vm::g_base_addr = %p - %p\n"
+	"vm::g_sudo_addr = %p - %p\n"
+	"vm::g_exec_addr = %p - %p\n"
+	"vm::g_stat_addr = %p - %p\n",
+	mem_map.base_addr, mem_map.base_addr + 0xffff'ffff,
+	mem_map.sudo_addr, mem_map.sudo_addr + 0xffff'ffff,
+	mem_map.exec_addr, mem_map.exec_addr + 0x1'ffff'ffff,
+	mem_map.stat_addr, mem_map.stat_addr + 0xffff'ffff);
+}
+
+ps3_process_info_t::~ps3_process_info_t()
+{
+	if (mem_map.base_addr)
+	{
+		utils::memory_decommit(mem_map.base_addr, 0x2'0000'0000);
+		utils::memory_decommit(mem_map.exec_addr, 0x2'0000'0000);
+		utils::memory_decommit(mem_map.stat_addr, 0x1'0000'0000);
+		utils::memory_release(mem_map.base_addr, 0x2'0000'0000);
+		utils::memory_release(mem_map.exec_addr, 0x2'0000'0000);
+		utils::memory_release(mem_map.stat_addr, 0x1'0000'0000);
+	}
+}
+
 // Check all flags known to be related to extended permissions (TODO)
 // It's possible anything which has root flags implicitly has debug perm as well
 // But I haven't confirmed it.
@@ -44,7 +78,7 @@ bool ps3_process_info_t::has_debug_perm() const
 	return (ctrl_flags1 & (0xa << 28)) != 0;
 }
 
-// If a SELF file is of CellOS return its filename, otheriwse return an empty string 
+// If a SELF file is of CellOS return its filename, otheriwse return an empty string
 std::string_view ps3_process_info_t::get_cellos_appname() const
 {
 	if (!has_root_perm() || !Emu.GetTitleID().empty())
@@ -54,10 +88,6 @@ std::string_view ps3_process_info_t::get_cellos_appname() const
 
 	return std::string_view(Emu.GetBoot()).substr(Emu.GetBoot().find_last_of('/') + 1);
 }
-
-LOG_CHANNEL(sys_process);
-
-ps3_process_info_t g_ps3_process_info;
 
 s32 process_getpid()
 {
@@ -186,11 +216,11 @@ error_code sys_process_get_id(u32 object, vm::ptr<u32> buffer, u32 size, vm::ptr
 	return process_get_id(object, buffer, size, set_size);
 }
 
-error_code sys_process_get_id2(u32 object, vm::ptr<u32> buffer, u32 size, vm::ptr<u32> set_size)
+error_code sys_process_get_id2(ppu_thread &ppu, u32 object, vm::ptr<u32> buffer, u32 size, vm::ptr<u32> set_size)
 {
 	sys_process.error("sys_process_get_id2(object=0x%x, buffer=*0x%x, size=%d, set_size=*0x%x)", object, buffer, size, set_size);
 
-	if (!g_ps3_process_info.has_root_perm())
+	if (!ppu.process->has_root_perm())
 	{
 		// This syscall is more capable than sys_process_get_id but also needs a root perm check
 		return CELL_ENOSYS;
@@ -282,20 +312,20 @@ error_code _sys_process_get_paramsfo(vm::ptr<char> buffer)
 	return CELL_OK;
 }
 
-s32 process_get_sdk_version(u32 /*pid*/, s32& ver)
+s32 process_get_sdk_version(ppu_thread &ppu, u32 /*pid*/, s32& ver)
 {
 	// get correct SDK version for selected pid
-	ver = g_ps3_process_info.sdk_ver;
+	ver = ppu.process->sdk_ver;
 
 	return CELL_OK;
 }
 
-error_code sys_process_get_sdk_version(u32 pid, vm::ptr<s32> version)
+error_code sys_process_get_sdk_version(ppu_thread &ppu, u32 pid, vm::ptr<s32> version)
 {
 	sys_process.warning("sys_process_get_sdk_version(pid=0x%x, version=*0x%x)", pid, version);
 
 	s32 sdk_ver;
-	const s32 ret = process_get_sdk_version(pid, sdk_ver);
+	const s32 ret = process_get_sdk_version(ppu, pid, sdk_ver);
 	if (ret != CELL_OK)
 	{
 		return CellError{ret + 0u}; // error code

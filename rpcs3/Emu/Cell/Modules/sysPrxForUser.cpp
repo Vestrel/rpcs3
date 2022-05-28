@@ -69,7 +69,7 @@ error_code sys_process_get_paramsfo(vm::ptr<char> buffer)
 	return _sys_process_get_paramsfo(buffer);
 }
 
-error_code sys_get_random_number(vm::ptr<void> addr, u64 size)
+error_code sys_get_random_number(ppu_thread &ppu, vm::ptr<void> addr, u64 size)
 {
 	sysPrxForUser.warning("sys_get_random_number(addr=*0x%x, size=%d)", addr, size);
 
@@ -78,7 +78,7 @@ error_code sys_get_random_number(vm::ptr<void> addr, u64 size)
 		return CELL_EINVAL;
 	}
 
-	switch (u32 rs = sys_ss_random_number_generator(2, addr, size))
+	switch (u32 rs = sys_ss_random_number_generator(ppu, 2, addr, size))
 	{
 	case 0x80010501: return CELL_ENOMEM;
 	case 0x80010503: return CELL_EAGAIN;
