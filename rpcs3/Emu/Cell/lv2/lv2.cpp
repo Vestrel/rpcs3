@@ -912,8 +912,8 @@ const std::array<std::pair<ppu_intrp_func_t, std::string_view>, 1024> g_ppu_sysc
 	NULL_FUNC(sys_dbg_get_lwmutex_information),             //941 (0x3AD)
 	NULL_FUNC(sys_dbg_get_event_queue_list),                //942 (0x3AE)
 	NULL_FUNC(sys_dbg_get_event_queue_information),         //943 (0x3AF)
-	NULL_FUNC(sys_dbg_initialize_ppu_exception_handler),    //944 (0x3B0)
-	NULL_FUNC(sys_dbg_finalize_ppu_exception_handler),      //945 (0x3B1)  DBG
+	BIND_SYSC(sys_dbg_initialize_ppu_exception_handler),    //944 (0x3B0)
+	BIND_SYSC(sys_dbg_finalize_ppu_exception_handler),      //945 (0x3B1)  DBG
 	NULL_FUNC(sys_dbg_get_semaphore_list),                  //946 (0x3B2)
 	NULL_FUNC(sys_dbg_get_semaphore_information),           //947 (0x3B3)
 	NULL_FUNC(sys_dbg_get_kernel_thread_list),              //948 (0x3B4)
@@ -2268,7 +2268,7 @@ void lv2_obj::notify_all() noexcept
 
 	u32 notifies[total_waiters]{};
 
-	// There may be 6 waiters, but checking them all may be performance expensive 
+	// There may be 6 waiters, but checking them all may be performance expensive
 	// Instead, check 2 at max, but use the CPU ID index to tell which index to start checking so the work would be distributed across all threads
 
 	atomic_t<u64, 64>* range_lock = nullptr;

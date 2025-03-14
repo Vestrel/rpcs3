@@ -245,6 +245,7 @@ void kernel_explorer::update()
 		{ SYS_LWCOND_OBJECT              , tr("Light Weight Condition Variables")},
 		{ SYS_EVENT_FLAG_OBJECT          , tr("Event Flags")},
 		{ SYS_RSXAUDIO_OBJECT            , tr("RSXAudio Objects")},
+		{ SYS_CRYPTO_OBJECT              , tr("Crypto Engines")},
 
 		{ memory_containers              , tr("Memory Containers")},
 		{ ppu_threads                    , tr("PPU Threads")},
@@ -593,6 +594,11 @@ void kernel_explorer::update()
 				}
 			}
 
+			break;
+		}
+		case SYS_CRYPTO_OBJECT:
+		{
+			add_leaf(node, qstr(fmt::format(u8"Crypto Engine 0x%08x", id)));
 			break;
 		}
 		default:

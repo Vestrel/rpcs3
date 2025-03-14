@@ -8,6 +8,7 @@
 #include "Emu/Memory/vm_locking.h"
 
 #include "util/asm.hpp"
+#include "sys_process.h"
 
 void ppu_register_function_at(u32 addr, u32 size, ppu_intrp_func_t ptr = nullptr);
 
@@ -126,6 +127,72 @@ error_code sys_dbg_write_process_memory(s32 pid, u32 address, u32 size, vm::cptr
 			i += op_size;
 		}
 	}
+
+	return CELL_OK;
+}
+
+struct ppu_exception_handler_data
+{
+	static constexpr u64 port_0_id = 0x8000111100000001ULL;
+	static constexpr u64 port_1_id = 0x8000111100000002ULL;
+
+	shared_mutex mutex{};
+	shared_ptr<lv2_event_queue> ppu_queue{};
+};
+
+error_code sys_dbg_initialize_ppu_exception_handler(u32 queue_handle)
+{
+	sys_dbg.warning("sys_dbg_initialize_ppu_exception_handler(queue_handle=0x%x)", queue_handle);
+
+	ppu_exception_handler_data &ped = g_fxo->get<ppu_exception_handler_data>();
+	std::lock_guard lock{ped.mutex};
+
+	auto eq = idm::get<lv2_obj, lv2_event_queue>(queue_handle, [](lv2_event_queue&) {});
+	if (!eq)
+	{
+		return CELL_ESRCH;
+	}
+
+	if (ped.ppu_queue)
+	{
+		return CELL_LV2DBG_ERROR_DEHANDLERALREADYREGISTERED;
+	}
+
+	ped.ppu_queue = eq;
+
+	return CELL_OK;
+}
+
+error_code sys_dbg_finalize_ppu_exception_handler(u32 queue_handle)
+{
+	sys_dbg.warning("sys_dbg_finalize_ppu_exception_handler(queue_handle=0x%x)", queue_handle);
+
+	if (!g_ps3_process_info.debug_or_root() && !g_cfg.core.debug_console_mode)
+	{
+		return CELL_LV2DBG_ERROR_DEINVALIDPROCESSID;
+	}
+
+	ppu_exception_handler_data& ped = g_fxo->get<ppu_exception_handler_data>();
+	std::lock_guard lock{ped.mutex};
+
+	if (!ped.ppu_queue)
+	{
+		return CELL_LV2DBG_ERROR_DEHANDLENOTREGISTERED;
+	}
+
+	auto eq = idm::get<lv2_obj, lv2_event_queue>(queue_handle, [](lv2_event_queue&) {});
+	if (!eq)
+	{
+		return CELL_ESRCH;
+	}
+
+	if (ped.ppu_queue != eq)
+	{
+		return CELL_LV2DBG_ERROR_DEINVALIDHANDLER;
+	}
+
+	eq->send(ped.port_0_id, UINT64_MAX, 0, 0);
+	ped.ppu_queue.reset();
 
 	return CELL_OK;
 }

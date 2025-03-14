@@ -27,6 +27,7 @@ enum : u32
 	SYS_LWCOND_OBJECT                = 0x97,
 	SYS_EVENT_FLAG_OBJECT            = 0x98,
 	SYS_RSXAUDIO_OBJECT              = 0x60,
+	SYS_CRYPTO_OBJECT                = 0x78,
 };
 
 enum : u64
